@@ -231,6 +231,22 @@ install(TARGETS amcl_3d_node
 # )
 
 ## Mark other files for installation (e.g. launch and bag files, etc.)
+if(CATKIN_ENABLE_TESTING)
+  # core logic tests (no ROS dependency)
+  catkin_add_gtest(test_amcl_core
+    test/test_amcl_core.cpp
+    src/mcl.cpp
+    src/particle_filter.cpp
+    src/xorshift128.cpp
+    src/time.cpp
+    src/resample_noise/normal_distribution.cpp
+    src/measurement_model/lidar_measurement_model.cpp
+    src/measurement_model/ndt_pose_measurement_model.cpp
+    src/prediction_model/foo_prediction_model.cpp
+  )
+  target_link_libraries(test_amcl_core ${catkin_LIBRARIES})
+endif()
+
 install(FILES
   launch/amcl_3d.launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}

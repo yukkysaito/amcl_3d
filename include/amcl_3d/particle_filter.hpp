@@ -33,16 +33,20 @@ public:
 
 public:
   ParticleFilter();
+  explicit ParticleFilter(uint64_t seed);
 
   virtual ~ParticleFilter(){};
-  bool init(const Position &position, const Quat &quat, const NoiseGenerators &noise_ge, const size_t particle_num);
+  bool init(const Position &position, const Quat &quat, const NoiseGenerators &noise_gen, const size_t particle_num,
+            const Time &time);
+  bool init(const Position &position, const Quat &quat, const NoiseGenerators &noise_gen, const size_t particle_num); // time = now
   bool resample(const KLDSamplingParam &param, const double random_particle_ratio,
                 const NoiseGenerators &random_particle_noise_gen); // kld resample and random noised resample
   bool resample(const size_t particle_num,
                 const double random_particle_ratio, const NoiseGenerators &random_particle_noise_gen); // random noised resample
   bool resample(const size_t particle_num);                                                            // normal resample
-                                                                                                       //  bool predict(std::shared_ptr<PredictionModelInterface> model);
   bool predict(std::shared_ptr<PredictionModelInterface> model, const Time &time);
+  // update_time == true : advance internal clock. A time older than the internal clock is rejected.
+  // update_time == false: predict a copy of particles (e.g. to a delayed measurement stamp), dt may be negative.
   bool predict(std::shared_ptr<Particles> particles_ptr,
                std::shared_ptr<PredictionModelInterface> model,
                const Time &time,
@@ -57,12 +61,18 @@ public:
   State getMAP();  // maximum a posteriori
   size_t getParticleNum();
   double getESS(const bool normalized = false); // effective sample size
+  Time getLastPredictionTime() const { return last_prediction_time_; }
+
+  // inverse of the standard normal CDF (quantile function), p in (0, 1)
+  static double getNormalQuantile(const double p);
 
 private:
+  // draw `particle_num` indices by low variance (systematic) sampling with a random offset
+  std::vector<size_t> drawSystematicIndices(const size_t particle_num);
+  State addNoise(const State &state, const NoiseGenerators &noise_gen);
   bool resample(std::shared_ptr<Particles> new_particles_ptr, const size_t particle_num,
                 const double random_particle_ratio, const NoiseGenerators &random_particle_noise_gen);
   void normalizeWeight(std::shared_ptr<Particles> particles_ptr);
-  double getNormalCDFQuantile(const double u);
   XorShift128 rand_;
   std::shared_ptr<Particles> particles_ptr_;
   Time last_prediction_time_;

@@ -8,6 +8,10 @@
 
 namespace amcl_3d
 {
+inline Time toTime(const ros::Time &ros_time) { return Time(ros_time.sec, ros_time.nsec); }
+// header stamp, or ros::Time::now() if the stamp is not set
+inline Time toTimeOrNow(const ros::Time &ros_time) { return ros_time.isZero() ? toTime(ros::Time::now()) : toTime(ros_time); }
+
 class FooPredictionModelNode
 {
   public:
