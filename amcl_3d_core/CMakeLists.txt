@@ -12,11 +12,13 @@ endif()
 
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common kdtree)
+find_package(OpenMP)
 
 # The library itself is plain C++ (Eigen + PCL); ROS is not required.
-add_library(${PROJECT_NAME}
+add_library(${PROJECT_NAME} SHARED
   src/gaussian_pose_sampler.cpp
   src/localizer.cpp
+  src/map/distance_field_map.cpp
   src/map/kdtree_map.cpp
   src/math.cpp
   src/measurement_model/point_cloud_measurement_model.cpp
@@ -37,8 +39,14 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   ${PCL_INCLUDE_DIRS}
 )
 target_link_libraries(${PROJECT_NAME} PUBLIC Eigen3::Eigen ${PCL_LIBRARIES})
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(${PROJECT_NAME} PRIVATE OpenMP::OpenMP_CXX)
+else()
+  target_compile_options(${PROJECT_NAME} PRIVATE -Wno-unknown-pragmas)
+endif()
 
 set(TEST_SOURCES
+  test/test_map.cpp
   test/test_math.cpp
   test/test_particle_filter.cpp
   test/test_motion_model.cpp

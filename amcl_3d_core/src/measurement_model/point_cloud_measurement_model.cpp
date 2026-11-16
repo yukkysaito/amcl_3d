@@ -17,6 +17,10 @@ PointCloudMeasurementModel::PointCloudMeasurementModel(
   if (params_.sigma <= 0.0) {
     throw std::invalid_argument("PointCloudMeasurementModel: sigma must be positive");
   }
+  if (map_->maxDistance() < params_.max_distance) {
+    throw std::invalid_argument(
+      "PointCloudMeasurementModel: max_distance exceeds the distance range of the map");
+  }
 }
 
 LogLikelihood PointCloudMeasurementModel::computeLogLikelihood(const ParticleSet & particles) const

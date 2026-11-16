@@ -22,6 +22,7 @@ public:
   };
 
   /// `points` are in the base frame. The caller selects/downsamples them beforehand.
+  /// Throws std::invalid_argument if sigma <= 0 or max_distance > map->maxDistance().
   PointCloudMeasurementModel(
     std::shared_ptr<const PointCloudMap> map, std::vector<Eigen::Vector3d> points,
     const Params & params);
