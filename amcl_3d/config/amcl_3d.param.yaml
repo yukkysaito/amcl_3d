@@ -1,0 +1,50 @@
+/**:
+  ros__parameters:
+    # frames
+    global_frame_id: map
+    odom_frame_id: odom
+    base_frame_id: base_link
+
+    # map: load a PCD file at startup, or leave empty to subscribe to the "map" topic
+    map_pcd_file: ""
+
+    # tf / output
+    transform_tolerance: 0.1  # [s] future dating of map->odom
+    tf_timeout: 0.1           # [s]
+    publish_tf: true
+    publish_particles: true
+    # used when the initial pose has no covariance: x, y, z [m], roll, pitch, yaw [rad]
+    default_initial_pose_stddev: [0.5, 0.5, 0.1, 0.02, 0.02, 0.2]
+
+    # particle filter
+    initial_particle_num: 500
+    scan_sample_num: 200  # scan points per update (0: all)
+    random_seed: -1       # -1: random
+
+    # white velocity noise, std = scale * |velocity| + bias (per sqrt(s), on each axis)
+    motion_model:
+      linear_noise_scale: 0.1   # [1/sqrt(s)]
+      linear_noise_bias: 0.1    # [m/s*sqrt(s)]
+      angular_noise_scale: 0.1  # [1/sqrt(s)]
+      angular_noise_bias: 0.02  # [rad/s*sqrt(s)]
+
+    point_cloud_measurement:
+      max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
+      sigma: 0.2         # [m]
+
+    resampling:
+      type: systematic          # systematic | kld
+      ess_ratio_threshold: 0.5  # resample when ESS / N < threshold
+      kld:
+        min_particle_num: 100
+        max_particle_num: 5000
+        epsilon: 0.05
+        delta: 0.01
+        bin_size_xyz: 0.5  # [m]
+        bin_size_yaw: 0.2  # [rad]
+
+    augmented_mcl:
+      enabled: false
+      alpha_slow: 0.001
+      alpha_fast: 0.1
+      injection_stddev: [1.0, 1.0, 0.1, 0.05, 0.05, 0.5]  # x, y, z [m], roll, pitch, yaw [rad]
