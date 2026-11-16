@@ -120,7 +120,21 @@ TEST(ParticleFilter, UpdateReturnsPerObservationLikelihood)
         10};
     }
   };
-  EXPECT_NEAR(filter.update(TenObservations()), 0.5, 1e-12);
+  const LikelihoodSummary likelihood = filter.update(TenObservations());
+  EXPECT_NEAR(likelihood.mean, 0.5, 1e-12);
+  EXPECT_NEAR(likelihood.max, 0.5, 1e-12);
+}
+
+TEST(ParticleFilter, ExpandSpreadsAllParticlesAndResetsWeights)
+{
+  ParticleFilter filter(5);
+  filter.initialize(PoseWithCovariance{}, 1000);
+  const FunctionMeasurementModel model([](const Pose &) { return 0.0; });
+  filter.update(model);
+  filter.expand(GaussianPoseSampler::fromStandardDeviations(Vector6d::Constant(0.5)));
+  EXPECT_EQ((filter.particles().positions().rowwise().norm().array() < 1e-12).count(), 0);
+  EXPECT_NEAR(filter.effectiveSampleSize(), 1000.0, 1e-6);
+  EXPECT_NEAR(std::sqrt(filter.estimate().covariance(0, 0)), 0.5, 0.05);
 }
 
 TEST(ParticleFilter, InjectRandomParticles)

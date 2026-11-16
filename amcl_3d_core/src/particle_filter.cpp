@@ -12,9 +12,15 @@ namespace amcl_3d
 void ParticleFilter::initialize(const PoseWithCovariance & initial_pose, size_t particle_num)
 {
   const GaussianPoseSampler sampler(initial_pose.covariance);
+  initialize(
+    [&](RandomGenerator & rng) { return sampler.sample(initial_pose.pose, rng); }, particle_num);
+}
+
+void ParticleFilter::initialize(const PoseSampler & sampler, size_t particle_num)
+{
   particles_ = ParticleSet(particle_num);
   for (size_t i = 0; i < particle_num; ++i) {
-    particles_.setPose(i, sampler.sample(initial_pose.pose, rng_));
+    particles_.setPose(i, sampler(rng_));
   }
 }
 
@@ -23,10 +29,10 @@ void ParticleFilter::predict(const MotionModel & model, const Twist & twist, dou
   model.predict(twist, dt, particles_, rng_);
 }
 
-double ParticleFilter::update(const MeasurementModel & model)
+LikelihoodSummary ParticleFilter::update(const MeasurementModel & model)
 {
   if (particles_.empty()) {
-    return 0.0;
+    return LikelihoodSummary{};
   }
   const LogLikelihood log_likelihood = model.computeLogLikelihood(particles_);
   particles_.logWeights() += log_likelihood.values;
@@ -34,7 +40,8 @@ double ParticleFilter::update(const MeasurementModel & model)
 
   const double observation_num =
     static_cast<double>(std::max<size_t>(log_likelihood.observation_num, 1));
-  return (log_likelihood.values.array() / observation_num).exp().mean();
+  const Eigen::ArrayXd likelihood = (log_likelihood.values.array() / observation_num).exp();
+  return LikelihoodSummary{likelihood.mean(), likelihood.maxCoeff()};
 }
 
 double ParticleFilter::effectiveSampleSize() const
@@ -68,6 +75,14 @@ void ParticleFilter::injectRandomParticles(double ratio, const GaussianPoseSampl
     const size_t i = order[k];
     particles_.setPose(i, sampler.sample(particles_.pose(i), rng_));
   }
+}
+
+void ParticleFilter::expand(const GaussianPoseSampler & sampler)
+{
+  for (size_t i = 0; i < particles_.size(); ++i) {
+    particles_.setPose(i, sampler.sample(particles_.pose(i), rng_));
+  }
+  particles_.setUniformWeights();
 }
 
 PoseWithCovariance ParticleFilter::estimate() const

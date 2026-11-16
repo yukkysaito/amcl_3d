@@ -44,38 +44,59 @@ Then set the initial pose with "2D Pose Estimate" in RViz.
 | `map` | `sensor_msgs/PointCloud2` (transient local) | map points (or set `map_pcd_file`) |
 | `initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | (re)initializes the particles |
 | `odom` | `nav_msgs/Odometry` | twist in the base frame, used for prediction |
+| `imu` | `sensor_msgs/Imu` | angular velocity, if `use_imu` |
 | `points` | `sensor_msgs/PointCloud2` | LiDAR scan, any frame with a TF to the base frame |
 | `pose` (out) | `geometry_msgs/PoseWithCovarianceStamped` | estimate in the global frame |
 | `particles` (out) | `geometry_msgs/PoseArray` | |
 | `tf` (out) | | `map` -> `odom` |
 
+Service `~/global_localization` (`std_srvs/Trigger`) spreads particles over the whole map
+(use `resampling.type: kld` with it).
+
 Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/config/amcl_3d.param.yaml).
+
+## Features
+
+- **Prediction**: odometry twists (optionally with IMU angular velocity) are buffered and integrated
+  on SE(3) up to each scan stamp; white velocity noise independent of the odometry rate
+- **Correction**: point-to-map distance likelihood with clipping, on
+  - `kdtree`: exact nearest neighbor, or
+  - `distance_field`: precomputed sparse field, ~30x faster queries, ~1-2 cm less accurate
+- **Scan preprocessing**: range / height crop, voxel grid, random subsampling
+- **Resampling**: systematic or KLD sampling, triggered by the effective sample size
+- **Recovery**: augmented MCL, expansion resetting, global localization
+- **Refinement**: optional NDT scan matching of the estimate (with optional feedback)
+- Outputs pose with covariance (quaternion averaging) and `map` -> `odom`
 
 ## Design
 
 ```
-Localizer                      time handling (buffered twists), resampling policy, augmented MCL
- └─ ParticleFilter             initialize / predict / update / resample / estimate
-     ├─ ParticleSet            structure of arrays + log weights (vectorization / GPU friendly)
-     ├─ MotionModel            TwistMotionModel: SE(3) integration of the body twist
-     ├─ MeasurementModel       PointCloudMeasurementModel (scan vs PointCloudMap), PoseMeasurementModel
-     └─ Resampler              SystematicResampler, KldResampler
+Localizer                      time handling, resampling policy, recovery, refinement
+ ├─ ParticleFilter             initialize / predict / update / resample / estimate
+ │   └─ ParticleSet            structure of arrays + log weights (vectorization / GPU friendly)
+ ├─ MotionModel                TwistMotionModel
+ ├─ MeasurementModel           PointCloudMeasurementModel, PoseMeasurementModel
+ │   └─ PointCloudMap          KdTreeMap, DistanceFieldMap
+ ├─ Resampler                  SystematicResampler, KldResampler
+ ├─ ScanFilter
+ └─ ScanMatcher                NdtScanMatcher
+GroundPoseSampler              initial distribution for global localization
 ```
 
-`MotionModel`, `MeasurementModel`, `Resampler` and `PointCloudMap` are the extension points.
+`MotionModel`, `MeasurementModel`, `PointCloudMap`, `Resampler` and `ScanMatcher` are the
+extension points.
 
-- Odometry twists are buffered and integrated piecewise up to each scan stamp, so delayed scans are
-  corrected at the right time.
-- Velocity noise is white noise (std grows with sqrt(dt)), independent of the odometry rate.
-- Weights are kept in the log domain; the orientation mean uses quaternion averaging.
+## Limitations
+
+- Validated on synthetic data only so far; real-data evaluation is pending.
+- Global localization assumes a ground vehicle (single ground level) and can lock onto a wrong
+  mode in (nearly) symmetric environments.
+- PCL works in single precision: shift maps in large coordinates (e.g. UTM) near the origin.
 
 ## Roadmap
 
-- Likelihood field (precomputed 3D distance map) instead of k-d tree search
-- Scan preprocessing (voxel grid, range / height filters)
-- Expansion / sensor resetting, global localization
-- Scan matching (NDT / GICP) refinement
-- CUDA backend for the likelihood computation
+- CUDA backend for the likelihood computation (on top of `DistanceFieldMap` and `ParticleSet`)
+- CPU parallelization of the likelihood
 - Evaluation on public datasets, CI
 
 ## References
@@ -83,6 +104,9 @@ Localizer                      time handling (buffered twists), resampling polic
 - S. Thrun, W. Burgard, D. Fox, *Probabilistic Robotics* — http://www.probabilistic-robotics.org/
 - D. Fox, "Adapting the sample size in particle filters through KLD-sampling", IJRR 2003
 - F. L. Markley et al., "Averaging quaternions", JGCD 2007
+- P. F. Felzenszwalb, D. P. Huttenlocher, "Distance Transforms of Sampled Functions", ToC 2012
+- R. Ueda et al., "Expansion resetting for recovery from fatal error in Monte Carlo localization", IROS 2004
+- M. Magnusson, "The three-dimensional normal-distributions transform", 2009
 - Effective sample size — http://www.cns.nyu.edu/~eorhan/notes/particle-filtering.pdf
 - Avoiding numerical underflow — http://www.maths.lu.se/fileadmin/maths/forskning_research/InferPartObsProcess/particlemethods.pdf
 - Japanese: http://lab.cntl.kyutech.ac.jp/~nishida/lecture/psc/no11.pdf ,

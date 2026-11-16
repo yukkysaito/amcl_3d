@@ -53,9 +53,20 @@ ResamplerType toResamplerType(const std::string & name)
   }
   throw std::invalid_argument("parameter 'resampling.type' must be 'systematic' or 'kld': " + name);
 }
+
+NodeParams::MapType toMapType(const std::string & name)
+{
+  if (name == "kdtree") {
+    return NodeParams::MapType::kKdTree;
+  }
+  if (name == "distance_field") {
+    return NodeParams::MapType::kDistanceField;
+  }
+  throw std::invalid_argument("parameter 'map.type' must be 'kdtree' or 'distance_field': " + name);
+}
 }  // namespace
 
-NodeParams declareNodeParams(rclcpp::Node & node)
+NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & localizer_params)
 {
   NodeParams p;
   p.global_frame_id =
@@ -73,6 +84,38 @@ NodeParams declareNodeParams(rclcpp::Node & node)
   p.default_initial_pose_stddev = declareVector6(
     node, "default_initial_pose_stddev", (Vector6d() << 0.5, 0.5, 0.1, 0.02, 0.02, 0.2).finished(),
     "Std dev used when the initial pose has no covariance: x, y, z [m], roll, pitch, yaw [rad]");
+  p.use_imu = declare<bool>(
+    node, "use_imu", false, "Use the IMU angular velocity instead of the odometry one");
+
+  p.map_type = toMapType(declare<std::string>(
+    node, "map.type", "kdtree", "'kdtree' (exact) or 'distance_field' (fast)"));
+  p.distance_field.resolution =
+    declare<double>(node, "map.resolution", 0.1, "Voxel size of the distance field [m]");
+  p.distance_field.max_distance = localizer_params.point_cloud_measurement.max_distance;
+
+  p.global_localization.particle_num = declareCount(
+    node, "global_localization.particle_num", 20000, "Particles drawn over the whole map");
+  p.global_localization.sampler.cell_size = declare<double>(
+    node, "global_localization.cell_size", 1.0, "Grid cell size to find the ground [m]");
+  p.global_localization.sampler.base_height = declare<double>(
+    node, "global_localization.base_height", 0.0, "Height of the base frame above the ground [m]");
+
+  const NdtScanMatcher::Params ndt_defaults;
+  auto & matching = p.scan_matching;
+  matching.enabled =
+    declare<bool>(node, "scan_matching.enabled", false, "Refine the estimate by NDT scan matching");
+  matching.ndt.resolution = declare<double>(
+    node, "scan_matching.ndt.resolution", ndt_defaults.resolution, "NDT voxel size [m]");
+  matching.ndt.step_size = declare<double>(
+    node, "scan_matching.ndt.step_size", ndt_defaults.step_size, "Maximum line search step [m]");
+  matching.ndt.transformation_epsilon = declare<double>(
+    node, "scan_matching.ndt.transformation_epsilon", ndt_defaults.transformation_epsilon,
+    "Convergence threshold of the transformation change");
+  matching.ndt.max_iterations = static_cast<int>(declareCount(
+    node, "scan_matching.ndt.max_iterations", ndt_defaults.max_iterations, "Maximum iterations"));
+  matching.ndt.max_fitness = declare<double>(
+    node, "scan_matching.ndt.max_fitness", ndt_defaults.max_fitness,
+    "Results with a larger fitness score (mean squared distance) are rejected [m^2]");
   return p;
 }
 
@@ -139,6 +182,39 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
   kld.bin_size_yaw = declare<double>(
     node, "resampling.kld.bin_size_yaw", defaults.resampling.kld.bin_size_yaw,
     "Histogram bin size in yaw [rad]");
+
+  auto & filter = p.scan_filter;
+  filter.min_range = declare<double>(node, "scan_filter.min_range", 1.0, "Minimum point range [m]");
+  filter.max_range =
+    declare<double>(node, "scan_filter.max_range", 100.0, "Maximum point range [m]");
+  filter.min_z = declare<double>(
+    node, "scan_filter.min_z", -100.0, "Minimum point height in the base frame [m]");
+  filter.max_z =
+    declare<double>(node, "scan_filter.max_z", 100.0, "Maximum point height in the base frame [m]");
+  filter.voxel_size = declare<double>(
+    node, "scan_filter.voxel_size", 0.5, "Downsampling voxel size [m] (0: disabled)");
+
+  auto & expansion = p.expansion_reset;
+  expansion.enabled = declare<bool>(
+    node, "expansion_reset.enabled", defaults.expansion_reset.enabled,
+    "Spread the particles when even the best one explains the scan poorly");
+  expansion.likelihood_threshold = declare<double>(
+    node, "expansion_reset.likelihood_threshold", defaults.expansion_reset.likelihood_threshold,
+    "Per-point likelihood of the best particle below which the particles are spread");
+  expansion.stddev = declareVector6(
+    node, "expansion_reset.stddev", defaults.expansion_reset.stddev,
+    "Spread: x, y, z [m], roll, pitch, yaw [rad]");
+
+  auto & matching = p.scan_matching;
+  matching.max_correction = declare<double>(
+    node, "scan_matching.max_correction", defaults.scan_matching.max_correction,
+    "Matched poses farther than this from the estimate are rejected [m]");
+  matching.feedback = declare<bool>(
+    node, "scan_matching.feedback", defaults.scan_matching.feedback,
+    "Also correct the particles with the matched pose");
+  matching.feedback_stddev = declareVector6(
+    node, "scan_matching.feedback_stddev", defaults.scan_matching.feedback_stddev,
+    "Std of the matched pose for the feedback: x, y, z [m], roll, pitch, yaw [rad]");
 
   auto & augmented = p.augmented_mcl;
   augmented.enabled = declare<bool>(

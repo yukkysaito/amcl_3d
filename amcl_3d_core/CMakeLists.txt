@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
-project(amcl_3d_core VERSION 0.1.0 LANGUAGES CXX)
+# C is required by the MPI dependency that VTK pulls in through PCL registration
+project(amcl_3d_core VERSION 0.1.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -11,12 +12,13 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common kdtree)
+find_package(PCL REQUIRED COMPONENTS common kdtree registration)
 find_package(OpenMP)
 
 # The library itself is plain C++ (Eigen + PCL); ROS is not required.
 add_library(${PROJECT_NAME} SHARED
   src/gaussian_pose_sampler.cpp
+  src/ground_pose_sampler.cpp
   src/localizer.cpp
   src/map/distance_field_map.cpp
   src/map/kdtree_map.cpp
@@ -29,6 +31,8 @@ add_library(${PROJECT_NAME} SHARED
   src/random.cpp
   src/resampler/kld_resampler.cpp
   src/resampler/systematic_resampler.cpp
+  src/scan_filter.cpp
+  src/scan_matcher/ndt_scan_matcher.cpp
 )
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -51,6 +55,7 @@ set(TEST_SOURCES
   test/test_particle_filter.cpp
   test/test_motion_model.cpp
   test/test_resampler.cpp
+  test/test_scan_filter.cpp
   test/test_localizer.cpp
 )
 
