@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  format:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang-format
+        run: |
+          pip install clang-format==17.0.5
+          find amcl_3d amcl_3d_core -name '*.[ch]pp' | xargs clang-format --dry-run --Werror
+
+  # The core library must stay buildable without ROS.
+  core-standalone:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ libeigen3-dev libpcl-dev libgtest-dev
+      - name: Build
+        run: |
+          cmake -S amcl_3d_core -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  ros2:
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [humble, jazzy]
+    runs-on: ubuntu-latest
+    container: ros:${{ matrix.distro }}-ros-base
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/amcl_3d
+      - name: Install dependencies
+        run: |
+          apt-get update
+          rosdep update --rosdistro "${{ matrix.distro }}"
+          rosdep install --from-paths src --ignore-src -y --rosdistro "${{ matrix.distro }}"
+      - name: Build
+        run: |
+          source /opt/ros/${{ matrix.distro }}/setup.bash
+          colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+      - name: Test
+        run: |
+          source /opt/ros/${{ matrix.distro }}/setup.bash
+          colcon test --event-handlers console_direct+
+          colcon test-result --verbose
