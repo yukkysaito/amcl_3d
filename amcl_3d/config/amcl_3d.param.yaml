@@ -31,6 +31,9 @@
     initial_particle_num: 500
     scan_sample_num: 200  # scan points per update (0: all)
     random_seed: -1       # -1: random
+    # CPU threads of the filter; 0 uses every hardware thread, which was slower than 4-16 threads on
+    # a 32 thread CPU (idle OpenMP threads spin on the cores the rest of the update runs on)
+    thread_num: 4
 
     # white velocity noise, std = scale * |velocity| + bias (per sqrt(s), on each axis)
     motion_model:
@@ -50,9 +53,6 @@
     point_cloud_measurement:
       max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
       sigma: 0.2         # [m]
-      # CPU threads of the likelihood (ignored with map.device cuda); 0 uses every hardware thread,
-      # which was slower than 4-16 threads on a 32 thread CPU (idle OpenMP threads spin)
-      thread_num: 4
 
     resampling:
       type: systematic          # systematic | kld

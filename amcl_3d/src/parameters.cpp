@@ -127,6 +127,11 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
   const auto seed =
     declare<int64_t>(node, "random_seed", -1, "Seed of the random generator (-1: random)");
   p.random_seed = seed < 0 ? std::random_device()() : static_cast<uint64_t>(seed);
+  // One knob for every parallel step of the filter.
+  const size_t thread_num = declareCount(
+    node, "thread_num", defaults.point_cloud_measurement.thread_num,
+    "CPU threads of the filter (0: all hardware threads, often slower)");
+  p.point_cloud_measurement.thread_num = thread_num;
 
   auto & motion = p.motion_model;
   motion.linear_noise_scale = declare<double>(
@@ -149,9 +154,6 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
   measurement.sigma = declare<double>(
     node, "point_cloud_measurement.sigma", defaults.point_cloud_measurement.sigma,
     "Std dev of the point-to-map distance [m]");
-  measurement.thread_num = declareCount(
-    node, "point_cloud_measurement.thread_num", defaults.point_cloud_measurement.thread_num,
-    "CPU threads of the likelihood evaluation (0: all hardware threads, often slower)");
 
   auto & resampling = p.resampling;
   resampling.type = toResamplerType(

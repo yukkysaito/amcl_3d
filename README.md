@@ -75,7 +75,7 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
   - `distance_field` (default): precomputed sparse field of nearest map points, ~12x faster
     updates than `kdtree` with the same accuracy on KITTI (see Evaluation), or
   - `kdtree`: exact nearest neighbor search
-  - particles are evaluated in parallel on `point_cloud_measurement.thread_num` CPU threads (OpenMP), or on a CUDA
+  - particles are evaluated in parallel on `thread_num` CPU threads (OpenMP), or on a CUDA
     GPU (`map.device: cuda`), which affords 10-100x more particles
 - **Scan preprocessing**: range / height crop, voxel grid, random subsampling
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
@@ -138,7 +138,7 @@ KITTI odometry sequence 07 (695 m, urban), evaluated with
 | `distance_field` 0.2 m, CUDA, 10000 particles | 0.090-0.092 | 0.12 | 0.31 | 2.7 / 3.1 |
 | `distance_field` 0.2 m, CUDA, 50000 particles | **0.068-0.071** | **0.09** | 0.28 | 9.6 / 11.4 |
 
-Ranges over 3 seeds; timing with `point_cloud_measurement.thread_num: 4` on an i9-14900K (the default 500 particles
+Ranges over 3 seeds; timing with `thread_num: 4` on an i9-14900K (the default 500 particles
 take 4.1 / 5.0 ms on one thread, 1.5 / 1.8 ms on 8). The results do not depend on the thread
 count. No frame was lost (error > 1 m) except one frame with KLD. The distance field takes 4 s to
 build and 227 MB (1.2 GB at 0.1 m) for this route.
@@ -149,7 +149,7 @@ not help (10000 particles x 1000 points: 0.093-0.097 m). Of the 9.6 ms with 5000
 takes under 1 ms (extrapolated from `likelihood_benchmark`); the rest is the CPU side (prediction,
 resampling, estimate).
 
-Using every hardware thread (`point_cloud_measurement.thread_num: 0`, 32 threads) was slower than 4-16 threads
+Using every hardware thread (`thread_num: 0`, 32 threads) was slower than 4-16 threads
 (6.2 ms): idle OpenMP threads spin on the cores the rest of the update runs on. Setting
 `OMP_WAIT_POLICY=passive` avoids that.
 
