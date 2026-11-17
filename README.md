@@ -128,26 +128,26 @@ KITTI odometry sequence 07 (695 m, urban), evaluated with
 
 | configuration | translation RMSE [m] | yaw RMSE [deg] | max [m] | update mean / p95 [ms] |
 |---|---|---|---|---|
-| `kdtree` | 0.159-0.164 | 0.18-0.20 | 0.56 | 23.6 / 27.4 |
-| `distance_field` 0.2 m (default) | 0.154-0.165 | 0.20-0.21 | 0.57 | **1.9 / 2.3** |
-| `distance_field` 0.1 m | 0.162-0.165 | 0.19-0.21 | 0.56 | 2.4 / 3.0 |
-| `distance_field` 0.2 m + NDT | 0.138-0.145 | 0.17-0.19 | 0.51 | 37.9 / 65.1 |
-| `distance_field` 0.2 m + KLD (~100 particles) | 0.226-0.241 | 0.28-0.29 | 1.01 | 1.2 / 1.5 |
-| `distance_field` 0.2 m, 10000 particles | 0.089-0.091 | 0.12 | 0.36 | 16.5 / 19.2 |
-| `distance_field` 0.2 m, CUDA | 0.155-0.165 | 0.20-0.21 | 0.47 | 1.0 / 1.2 |
-| `distance_field` 0.2 m, CUDA, 10000 particles | 0.090-0.092 | 0.12 | 0.31 | 2.7 / 3.1 |
-| `distance_field` 0.2 m, CUDA, 50000 particles | **0.068-0.071** | **0.09** | 0.28 | 9.6 / 11.4 |
+| `kdtree` | 0.158-0.170 | 0.19-0.20 | 0.57 | 24.0 / 27.9 |
+| `distance_field` 0.2 m (default) | 0.153-0.158 | 0.20-0.21 | 0.49 | **1.8 / 2.2** |
+| `distance_field` 0.1 m | 0.161-0.167 | 0.19-0.21 | 0.57 | 2.4 / 2.9 |
+| `distance_field` 0.2 m + NDT | 0.139-0.141 | 0.18-0.19 | 0.47 | 35.6 / 60.9 |
+| `distance_field` 0.2 m + KLD (~100 particles) | 0.221-0.243 | 0.27-0.29 | 0.85 | 1.2 / 1.4 |
+| `distance_field` 0.2 m, 10000 particles | 0.089-0.103 | 0.12-0.13 | 0.34 | 15.5 / 18.0 |
+| `distance_field` 0.2 m, CUDA | 0.153-0.158 | 0.20-0.21 | 0.49 | 1.0 / 1.2 |
+| `distance_field` 0.2 m, CUDA, 10000 particles | 0.088-0.091 | 0.12-0.13 | 0.34 | 2.0 / 2.4 |
+| `distance_field` 0.2 m, CUDA, 50000 particles | **0.067-0.085** | **0.09-0.10** | 0.30 | 5.7 / 7.4 |
 
 Ranges over 3 seeds; timing with `thread_num: 4` on an i9-14900K (the default 500 particles
 take 4.1 / 5.0 ms on one thread, 1.5 / 1.8 ms on 8). The results do not depend on the thread
-count. No frame was lost (error > 1 m) except one frame with KLD. The distance field takes 4 s to
+count. No frame was lost (error > 1 m). The distance field takes 4 s to
 build and 227 MB (1.2 GB at 0.1 m) for this route.
 
 More particles pay off: 10000 particles nearly halve the error of the default 500, and 50000 cut
-it to 0.07 m, which the GPU backend (RTX 5080) keeps within 10 ms per update. More scan points do
-not help (10000 particles x 1000 points: 0.093-0.097 m). Of the 9.6 ms with 50000 particles, the likelihood
-takes under 1 ms (extrapolated from `likelihood_benchmark`); the rest is the CPU side (prediction,
-resampling, estimate).
+it to 0.07 m, which the GPU backend (RTX 5080) keeps within 6 ms per update. More scan points do
+not help (10000 particles x 1000 points: 0.093-0.097 m). With 50000 particles the likelihood takes
+under 1 ms; prediction runs in parallel on `thread_num` threads, and the rest is resampling and the
+estimate on one thread.
 
 Using every hardware thread (`thread_num: 0`, 32 threads) was slower than 4-16 threads
 (6.2 ms): idle OpenMP threads spin on the cores the rest of the update runs on. Setting

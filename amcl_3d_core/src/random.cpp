@@ -31,4 +31,17 @@ XorShift128::result_type XorShift128::operator()()
   return w_;
 }
 
+uint64_t drawKey(RandomGenerator & rng)
+{
+  const uint64_t high = rng();
+  return (high << 32) | rng();
+}
+
+RandomGenerator parallelStream(uint64_t key, uint64_t index)
+{
+  // An odd multiplier spreads consecutive indices over the 64 bits; seed() then hashes the result
+  // with splitmix64, whose outputs are uncorrelated even for nearby inputs.
+  return RandomGenerator(key ^ (index * 0xD1B54A32D192ED03ULL));
+}
+
 }  // namespace amcl_3d
