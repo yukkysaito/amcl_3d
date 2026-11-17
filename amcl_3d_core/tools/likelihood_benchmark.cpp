@@ -11,6 +11,7 @@
 #include <random>
 #include <vector>
 
+#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
 #include "amcl_3d_core/measurement_model/point_cloud_measurement_model.hpp"
@@ -110,15 +111,25 @@ int main(int argc, char ** argv)
   std::printf(
     "build: kdtree %.2f s, distance_field(0.1 m) %.2f s, %.0f MB\n", kdtree_build, field_build,
     static_cast<double>(field->memoryBytes()) / 1e6);
+  std::shared_ptr<CudaDistanceFieldMap> cuda_field;
+  if (CudaDistanceFieldMap::available()) {
+    cuda_field = std::make_shared<CudaDistanceFieldMap>(field);
+    measureMs(cuda_field, 100, 100, 1);  // CUDA context and buffer setup
+  } else {
+    std::printf("CUDA: not available (build with -DAMCL3D_USE_CUDA=ON and a CUDA device)\n");
+  }
   std::printf(
-    "%10s %8s %14s %14s %8s\n", "particles", "points", "kdtree [ms]", "field [ms]", "speedup");
+    "%10s %8s %12s %12s %12s\n", "particles", "points", "kdtree [ms]", "field [ms]", "cuda [ms]");
   for (const size_t particle_num : {500, 2000, 10000}) {
-    for (const size_t point_num : {100, 300}) {
-      const double kd_ms = measureMs(kdtree, particle_num, point_num, repetitions);
+    for (const size_t point_num : {100, 300, 2000}) {
+      // the k-d tree takes seconds for the large cases
+      const bool large = particle_num * point_num > 1000000;
+      const double kd_ms = large ? NAN : measureMs(kdtree, particle_num, point_num, repetitions);
       const double field_ms = measureMs(field, particle_num, point_num, repetitions);
+      const double cuda_ms =
+        cuda_field ? measureMs(cuda_field, particle_num, point_num, repetitions) : NAN;
       std::printf(
-        "%10zu %8zu %14.1f %14.1f %7.1fx\n", particle_num, point_num, kd_ms, field_ms,
-        kd_ms / field_ms);
+        "%10zu %8zu %12.1f %12.1f %12.2f\n", particle_num, point_num, kd_ms, field_ms, cuda_ms);
     }
   }
   return 0;

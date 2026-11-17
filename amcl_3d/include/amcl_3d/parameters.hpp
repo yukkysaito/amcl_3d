@@ -37,6 +37,8 @@ struct NodeParams
   MapType map_type;
   /// CPU threads of the likelihood evaluation (0: all hardware threads).
   size_t map_thread_num;
+  /// Evaluate the likelihood of the distance field on a CUDA GPU.
+  bool map_use_cuda;
   /// max_distance is taken from point_cloud_measurement.max_distance.
   DistanceFieldMap::Params distance_field;
 
