@@ -51,8 +51,15 @@ Localizer::Localizer(const LocalizerParams & params)
   motion_model_(std::make_unique<TwistMotionModel>(params.motion_model)),
   resampler_(createResampler(params.resampling)),
   injection_sampler_(
-    GaussianPoseSampler::fromStandardDeviations(params.augmented_mcl.injection_stddev))
+    GaussianPoseSampler::fromStandardDeviations(params.augmented_mcl.injection_stddev)),
+  expansion_sampler_(GaussianPoseSampler::fromStandardDeviations(params.expansion_reset.stddev)),
+  scan_filter_(params.scan_filter)
 {
+  if (
+    params_.scan_matching.feedback &&
+    (params_.scan_matching.feedback_stddev.array() <= 0.0).any()) {
+    throw std::invalid_argument("Localizer: scan_matching.feedback_stddev must be positive");
+  }
 }
 
 void Localizer::setMotionModel(std::unique_ptr<MotionModel> model)
@@ -71,12 +78,38 @@ void Localizer::setResampler(std::unique_ptr<Resampler> resampler)
   resampler_ = std::move(resampler);
 }
 
+void Localizer::setMap(std::shared_ptr<const PointCloudMap> map)
+{
+  if (!map) {
+    throw std::invalid_argument("Localizer: map is null");
+  }
+  if (map->maxDistance() < params_.point_cloud_measurement.max_distance) {
+    throw std::invalid_argument(
+      "Localizer: the map distance range is shorter than point_cloud_measurement.max_distance");
+  }
+  map_ = std::move(map);
+}
+
 void Localizer::initialize(const PoseWithCovariance & initial_pose, const Time & stamp)
 {
   filter_.initialize(initial_pose, params_.initial_particle_num);
+  resetState(stamp);
+}
+
+void Localizer::initialize(const PoseSampler & sampler, size_t particle_num, const Time & stamp)
+{
+  filter_.initialize(sampler, particle_num);
+  resetState(stamp);
+}
+
+void Localizer::resetState(const Time & stamp)
+{
   stamp_ = stamp;
   w_slow_ = 0.0;
   w_fast_ = 0.0;
+  last_likelihood_ = LikelihoodSummary{};
+  expansion_reset_count_ = 0;
+  refined_pose_.reset();
   initialized_ = true;
   pruneTwists();
 }
@@ -140,7 +173,7 @@ LocalizerStatus Localizer::updateWithPointCloud(const PointCloud & scan, const T
   if (!hasMap()) {
     return LocalizerStatus::kNoMap;
   }
-  std::vector<Eigen::Vector3d> points = selectScanPoints(scan);
+  const std::vector<Eigen::Vector3d> points = scan_filter_.apply(scan);
   if (points.empty()) {
     return LocalizerStatus::kInvalidMeasurement;
   }
@@ -148,7 +181,10 @@ LocalizerStatus Localizer::updateWithPointCloud(const PointCloud & scan, const T
   if (status != LocalizerStatus::kOk) {
     return status;
   }
-  correct(PointCloudMeasurementModel(map_, std::move(points), params_.point_cloud_measurement));
+  correct(PointCloudMeasurementModel(map_, samplePoints(points), params_.point_cloud_measurement));
+  if (scan_matcher_) {
+    refineByScanMatching(points);
+  }
   return LocalizerStatus::kOk;
 }
 
@@ -171,9 +207,17 @@ LocalizerStatus Localizer::updateWithPose(
 
 void Localizer::correct(const MeasurementModel & model)
 {
-  const double average_likelihood = filter_.update(model);
-  w_slow_ += params_.augmented_mcl.alpha_slow * (average_likelihood - w_slow_);
-  w_fast_ += params_.augmented_mcl.alpha_fast * (average_likelihood - w_fast_);
+  last_likelihood_ = filter_.update(model);
+  w_slow_ += params_.augmented_mcl.alpha_slow * (last_likelihood_.mean - w_slow_);
+  w_fast_ += params_.augmented_mcl.alpha_fast * (last_likelihood_.mean - w_fast_);
+
+  if (
+    params_.expansion_reset.enabled &&
+    last_likelihood_.max < params_.expansion_reset.likelihood_threshold) {
+    filter_.expand(expansion_sampler_);
+    ++expansion_reset_count_;
+    return;
+  }
 
   const double particle_num = static_cast<double>(filter_.particles().size());
   const double threshold = params_.resampling.ess_ratio_threshold;
@@ -186,25 +230,36 @@ void Localizer::correct(const MeasurementModel & model)
   }
 }
 
-std::vector<Eigen::Vector3d> Localizer::selectScanPoints(const PointCloud & scan)
+std::vector<Eigen::Vector3d> Localizer::samplePoints(const std::vector<Eigen::Vector3d> & points)
 {
-  std::vector<Eigen::Vector3d> finite_points;
-  finite_points.reserve(scan.size());
-  for (const auto & point : scan) {
-    if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z)) {
-      finite_points.emplace_back(point.x, point.y, point.z);
-    }
-  }
   const size_t sample_num = params_.scan_sample_num;
-  if (sample_num == 0 || finite_points.size() <= sample_num) {
-    return finite_points;
+  if (sample_num == 0 || points.size() <= sample_num) {
+    return points;
   }
   std::vector<Eigen::Vector3d> sampled;
   sampled.reserve(sample_num);
   std::sample(
-    finite_points.begin(), finite_points.end(), std::back_inserter(sampled), sample_num,
+    points.begin(), points.end(), std::back_inserter(sampled), sample_num,
     filter_.randomGenerator());
   return sampled;
+}
+
+void Localizer::refineByScanMatching(const std::vector<Eigen::Vector3d> & points)
+{
+  refined_pose_.reset();
+  const Pose estimate = filter_.estimate().pose;
+  const ScanMatchingResult result = scan_matcher_->align(points, estimate);
+  const double correction = (result.pose.position - estimate.position).norm();
+  if (!result.converged || correction > params_.scan_matching.max_correction) {
+    return;
+  }
+  refined_pose_ = result.pose;
+  if (params_.scan_matching.feedback) {
+    PoseWithCovariance observation;
+    observation.pose = result.pose;
+    observation.covariance = params_.scan_matching.feedback_stddev.cwiseAbs2().asDiagonal();
+    correct(PoseMeasurementModel(observation));
+  }
 }
 
 }  // namespace amcl_3d

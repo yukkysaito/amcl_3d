@@ -16,6 +16,7 @@ def generate_launch_description():
         DeclareLaunchArgument('input_map', default_value='/map_points'),
         DeclareLaunchArgument('input_points', default_value='/points'),
         DeclareLaunchArgument('input_odom', default_value='/odom'),
+        DeclareLaunchArgument('input_imu', default_value='/imu'),
         DeclareLaunchArgument('input_initialpose', default_value='/initialpose'),
     ]
 
@@ -30,6 +31,7 @@ def generate_launch_description():
             ('map', LaunchConfiguration('input_map')),
             ('points', LaunchConfiguration('input_points')),
             ('odom', LaunchConfiguration('input_odom')),
+            ('imu', LaunchConfiguration('input_imu')),
             ('initialpose', LaunchConfiguration('input_initialpose')),
         ],
     )

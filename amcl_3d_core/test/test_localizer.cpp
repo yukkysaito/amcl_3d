@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <stdexcept>
 
+#include "amcl_3d_core/ground_pose_sampler.hpp"
 #include "amcl_3d_core/localizer.hpp"
+#include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
+#include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "test_utils.hpp"
 
 namespace amcl_3d
@@ -71,38 +75,185 @@ TEST(Localizer, RejectsOutOfOrderInputs)
     LocalizerStatus::kInvalidMeasurement);
 }
 
-TEST(Localizer, PointCloudUpdateConvergesToTruePose)
+/// Synthetic room with a vehicle standing at a known pose.
+class RoomLocalizationTest : public ::testing::Test
 {
-  const PointCloud::Ptr map = test::makeRoomMap();
-  Pose true_pose;
-  true_pose.position = Eigen::Vector3d(3.0, 2.0, 0.0);
-  true_pose.orientation = test::yawQuaternion(0.3);
-  const PointCloud::Ptr scan = test::makeScan(*map, true_pose);
+protected:
+  void SetUp() override
+  {
+    map_ = test::makeRoomMap();
+    true_pose_.position = Eigen::Vector3d(3.0, 2.0, 0.0);
+    true_pose_.orientation = test::yawQuaternion(0.3);
+    scan_ = test::makeScan(*map_, true_pose_);
 
-  LocalizerParams params;
-  params.random_seed = 42;
-  params.initial_particle_num = 500;
-  params.scan_sample_num = 300;
-  params.point_cloud_measurement.sigma = 0.2;
-  params.motion_model = TwistMotionModel::Params{0.0, 0.02, 0.0, 0.005};  // keeps diversity
-  Localizer localizer(params);
-  localizer.setMap(std::make_shared<KdTreeMap>(map));
-
-  // initial guess off by (0.3, -0.2) m and -0.1 rad
-  PoseWithCovariance initial;
-  initial.pose.position = Eigen::Vector3d(3.3, 1.8, 0.0);
-  initial.pose.orientation = test::yawQuaternion(0.2);
-  initial.covariance.diagonal() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02;
-  localizer.initialize(initial, seconds(0.0));
-
-  for (int i = 1; i <= 30; ++i) {
-    ASSERT_EQ(localizer.updateWithPointCloud(*scan, seconds(0.1 * i)), LocalizerStatus::kOk);
+    params_.random_seed = 42;
+    params_.initial_particle_num = 500;
+    params_.scan_sample_num = 300;
+    params_.point_cloud_measurement.sigma = 0.2;
+    params_.motion_model = TwistMotionModel::Params{0.0, 0.02, 0.0, 0.005};  // keeps diversity
   }
-  const PoseWithCovariance estimate = localizer.estimate();
-  EXPECT_LT((estimate.pose.position - true_pose.position).head<2>().norm(), 0.1);
-  EXPECT_LT(test::angleDifference(test::yawOf(estimate.pose.orientation), 0.3), 1.0 * M_PI / 180.0);
-  // converged: position uncertainty well below the initial one
-  EXPECT_LT(estimate.covariance(0, 0), 0.01);
+
+  /// Initial guess off by `offset` [m] in x with the given covariance diagonal.
+  PoseWithCovariance initialGuess(double offset, const Vector6d & variance) const
+  {
+    PoseWithCovariance initial;
+    initial.pose.position = true_pose_.position + Eigen::Vector3d(offset, -0.2, 0.0);
+    initial.pose.orientation = test::yawQuaternion(0.2);
+    initial.covariance.diagonal() = variance;
+    return initial;
+  }
+
+  /// Feeds the same scan `update_num` times at 10 Hz.
+  void runUpdates(Localizer & localizer, int update_num)
+  {
+    for (int i = 1; i <= update_num; ++i) {
+      ASSERT_EQ(
+        localizer.updateWithPointCloud(*scan_, seconds(time_ += 0.1)), LocalizerStatus::kOk);
+    }
+  }
+
+  double positionError(const Localizer & localizer) const
+  {
+    return (localizer.estimate().pose.position - true_pose_.position).head<2>().norm();
+  }
+  double yawError(const Localizer & localizer) const
+  {
+    return test::angleDifference(
+      test::yawOf(localizer.estimate().pose.orientation), test::yawOf(true_pose_.orientation));
+  }
+
+  PointCloud::Ptr map_;
+  PointCloud::Ptr scan_;
+  Pose true_pose_;
+  LocalizerParams params_;
+  double time_ = 0.0;
+};
+
+TEST_F(RoomLocalizationTest, ConvergesWithKdTreeMap)
+{
+  Localizer localizer(params_);
+  localizer.setMap(std::make_shared<KdTreeMap>(map_));
+  localizer.initialize(
+    initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
+  runUpdates(localizer, 30);
+  EXPECT_LT(positionError(localizer), 0.1);
+  EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
+  EXPECT_LT(localizer.estimate().covariance(0, 0), 0.01);  // well below the initial 0.1
+}
+
+TEST_F(RoomLocalizationTest, ConvergesWithDistanceFieldMap)
+{
+  params_.scan_filter.voxel_size = 0.3;
+  Localizer localizer(params_);
+  localizer.setMap(std::make_shared<DistanceFieldMap>(*map_, DistanceFieldMap::Params{0.1, 1.0}));
+  localizer.initialize(
+    initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
+  runUpdates(localizer, 30);
+  EXPECT_LT(positionError(localizer), 0.1);
+  EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
+}
+
+TEST_F(RoomLocalizationTest, RejectsMapShorterThanMeasurementRange)
+{
+  Localizer localizer(params_);
+  EXPECT_THROW(
+    localizer.setMap(std::make_shared<DistanceFieldMap>(*map_, DistanceFieldMap::Params{0.1, 0.5})),
+    std::invalid_argument);
+}
+
+TEST_F(RoomLocalizationTest, ExpansionResetRecoversFromWrongInitialPose)
+{
+  // overconfident initial pose 1.2 m away: no particle near the truth
+  const Vector6d tight = (Vector6d() << 1e-4, 1e-4, 0.0, 0.0, 0.0, 1e-4).finished();
+  const auto map = std::make_shared<DistanceFieldMap>(*map_, DistanceFieldMap::Params{0.1, 1.0});
+  params_.scan_filter.voxel_size = 0.3;
+  {
+    // without resetting, particles only creep towards the truth through the motion noise
+    Localizer without_reset(params_);
+    without_reset.setMap(map);
+    without_reset.initialize(initialGuess(1.2, tight), seconds(0.0));
+    runUpdates(without_reset, 50);
+    EXPECT_GT(positionError(without_reset), 0.3);
+  }
+  params_.expansion_reset.enabled = true;
+  Localizer with_reset(params_);
+  with_reset.setMap(map);
+  with_reset.initialize(initialGuess(1.2, tight), seconds(0.0));
+  runUpdates(with_reset, 50);
+  EXPECT_GT(with_reset.expansionResetCount(), 0u);
+  EXPECT_LT(positionError(with_reset), 0.1);
+  EXPECT_LT(yawError(with_reset), 1.0 * M_PI / 180.0);
+  EXPECT_GT(with_reset.lastLikelihood().max, params_.expansion_reset.likelihood_threshold);
+}
+
+TEST_F(RoomLocalizationTest, NdtMatcherAlignsFromOffsetGuess)
+{
+  // the convergence basin of NDT is limited (~ resolution / 10 here); the particle filter
+  // provides a guess within it
+  NdtScanMatcher matcher(map_, NdtScanMatcher::Params{1.0, 0.1, 0.001, 50, 1.0});
+  std::vector<Eigen::Vector3d> scan;
+  for (const auto & p : *scan_) {
+    scan.emplace_back(p.x, p.y, p.z);
+  }
+  Pose guess = true_pose_;
+  guess.position += Eigen::Vector3d(0.1, -0.06, 0.0);
+  guess.orientation = test::yawQuaternion(0.32);
+  const ScanMatchingResult result = matcher.align(scan, guess);
+  ASSERT_TRUE(result.converged);
+  EXPECT_LT((result.pose.position - true_pose_.position).norm(), 0.02);
+  EXPECT_LT(result.pose.orientation.angularDistance(true_pose_.orientation), 0.2 * M_PI / 180.0);
+}
+
+TEST_F(RoomLocalizationTest, ScanMatchingRefinesTheEstimate)
+{
+  params_.scan_filter.voxel_size = 0.2;
+  params_.scan_matching.feedback = true;
+  Localizer localizer(params_);
+  localizer.setMap(std::make_shared<DistanceFieldMap>(*map_, DistanceFieldMap::Params{0.1, 1.0}));
+  localizer.setScanMatcher(
+    std::make_unique<NdtScanMatcher>(map_, NdtScanMatcher::Params{1.0, 0.1, 0.001, 50, 1.0}));
+  localizer.initialize(
+    initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
+  runUpdates(localizer, 20);
+  ASSERT_TRUE(localizer.refinedPose().has_value());
+  const Pose & refined = *localizer.refinedPose();
+  EXPECT_LT((refined.position - true_pose_.position).norm(), 0.02);
+  EXPECT_LT(refined.orientation.angularDistance(true_pose_.orientation), 0.2 * M_PI / 180.0);
+  // feedback pulls the particles to the refined pose as well
+  EXPECT_LT(positionError(localizer), 0.05);
+
+  params_.scan_matching.feedback_stddev(0) = 0.0;
+  EXPECT_THROW(Localizer{params_}, std::invalid_argument);
+}
+
+TEST_F(RoomLocalizationTest, GlobalLocalizationWithKldSampling)
+{
+  // The room alone is nearly symmetric under a 180 deg rotation (only the box breaks it), which
+  // makes global localization from a single static scan ambiguous. Add a pillar so that the
+  // test exercises the algorithm rather than an ill-posed scene.
+  for (double z = 0.0; z <= 2.0; z += 0.1) {
+    for (double a = 0.0; a < 2.0 * M_PI; a += 0.3) {
+      map_->push_back(pcl::PointXYZ(
+        static_cast<float>(1.5 + 0.3 * std::cos(a)), static_cast<float>(1.0 + 0.3 * std::sin(a)),
+        static_cast<float>(z)));
+    }
+  }
+  scan_ = test::makeScan(*map_, true_pose_);
+
+  params_.resampling.type = ResamplerType::kKld;
+  params_.resampling.kld.max_particle_num = 20000;
+  params_.scan_sample_num = 100;
+  params_.scan_filter.voxel_size = 0.3;
+  Localizer localizer(params_);
+  localizer.setMap(std::make_shared<DistanceFieldMap>(*map_, DistanceFieldMap::Params{0.1, 1.0}));
+
+  const GroundPoseSampler sampler(*map_, GroundPoseSampler::Params{0.5, 0.0});
+  localizer.initialize(
+    [&](RandomGenerator & rng) { return sampler.sample(rng); }, 20000, seconds(0.0));
+  runUpdates(localizer, 40);
+  EXPECT_LT(positionError(localizer), 0.1);
+  EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
+  EXPECT_LT(localizer.particles().size(), 2000u);  // KLD shrank the set after convergence
 }
 
 TEST(Localizer, PoseUpdateConvergesToObservation)

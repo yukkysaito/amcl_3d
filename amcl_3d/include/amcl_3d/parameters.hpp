@@ -3,7 +3,10 @@
 #include <rclcpp/node.hpp>
 #include <string>
 
+#include "amcl_3d_core/ground_pose_sampler.hpp"
 #include "amcl_3d_core/localizer.hpp"
+#include "amcl_3d_core/map/distance_field_map.hpp"
+#include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 
 namespace amcl_3d
 {
@@ -23,11 +26,34 @@ struct NodeParams
   bool publish_particles;
   /// Used when the initial pose message has no covariance: x, y, z, roll, pitch, yaw.
   Vector6d default_initial_pose_stddev;
+  /// Take the angular velocity from the IMU instead of the odometry.
+  bool use_imu;
+
+  enum class MapType
+  {
+    kKdTree,
+    kDistanceField
+  };
+  MapType map_type;
+  /// max_distance is taken from point_cloud_measurement.max_distance.
+  DistanceFieldMap::Params distance_field;
+
+  struct GlobalLocalization
+  {
+    size_t particle_num;
+    GroundPoseSampler::Params sampler;
+  } global_localization;
+
+  struct ScanMatching
+  {
+    bool enabled;
+    NdtScanMatcher::Params ndt;
+  } scan_matching;
 };
 
 /// Declares all parameters on `node` and returns their values. Throws std::invalid_argument for
-/// invalid values.
-NodeParams declareNodeParams(rclcpp::Node & node);
+/// invalid values. declareNodeParams() must be called after declareLocalizerParams().
 LocalizerParams declareLocalizerParams(rclcpp::Node & node);
+NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & localizer_params);
 
 }  // namespace amcl_3d

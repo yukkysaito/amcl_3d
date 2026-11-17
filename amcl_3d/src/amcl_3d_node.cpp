@@ -10,7 +10,9 @@
 #include <vector>
 
 #include "amcl_3d/conversions.hpp"
+#include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
+#include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 
 namespace amcl_3d
 {
@@ -30,13 +32,15 @@ PointCloud::Ptr toPointCloud(const sensor_msgs::msg::PointCloud2 & msg)
 
 Amcl3dNode::Amcl3dNode(const rclcpp::NodeOptions & options)
 : Node("amcl_3d", options),
-  params_(declareNodeParams(*this)),
-  localizer_(std::make_unique<Localizer>(declareLocalizerParams(*this))),
+  localizer_params_(declareLocalizerParams(*this)),
+  params_(declareNodeParams(*this, localizer_params_)),
+  localizer_(std::make_unique<Localizer>(localizer_params_)),
   tf_buffer_(get_clock()),
   tf_listener_(tf_buffer_),
   tf_broadcaster_(*this)
 {
   using std::placeholders::_1;
+  using std::placeholders::_2;
 
   pose_pub_ =
     create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("pose", rclcpp::QoS(10));
@@ -56,8 +60,14 @@ Amcl3dNode::Amcl3dNode(const rclcpp::NodeOptions & options)
     "initialpose", rclcpp::QoS(1), std::bind(&Amcl3dNode::onInitialPose, this, _1));
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     "odom", rclcpp::SensorDataQoS().keep_last(100), std::bind(&Amcl3dNode::onOdometry, this, _1));
+  if (params_.use_imu) {
+    imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
+      "imu", rclcpp::SensorDataQoS().keep_last(100), std::bind(&Amcl3dNode::onImu, this, _1));
+  }
   points_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
     "points", rclcpp::SensorDataQoS().keep_last(1), std::bind(&Amcl3dNode::onPointCloud, this, _1));
+  global_localization_srv_ = create_service<std_srvs::srv::Trigger>(
+    "~/global_localization", std::bind(&Amcl3dNode::onGlobalLocalization, this, _1, _2));
 }
 
 std::optional<Eigen::Isometry3d> Amcl3dNode::lookupTransform(
@@ -79,7 +89,20 @@ std::optional<Eigen::Isometry3d> Amcl3dNode::lookupTransform(
 void Amcl3dNode::setMap(const PointCloud::Ptr & map)
 {
   try {
-    localizer_->setMap(std::make_shared<KdTreeMap>(map));
+    if (params_.map_type == NodeParams::MapType::kDistanceField) {
+      const auto field = std::make_shared<DistanceFieldMap>(*map, params_.distance_field);
+      RCLCPP_INFO(
+        get_logger(), "distance field: %zu blocks, %.1f MB", field->blockNum(),
+        static_cast<double>(field->memoryBytes()) / 1e6);
+      localizer_->setMap(field);
+    } else {
+      localizer_->setMap(std::make_shared<KdTreeMap>(map));
+    }
+    global_sampler_ =
+      std::make_unique<GroundPoseSampler>(*map, params_.global_localization.sampler);
+    if (params_.scan_matching.enabled) {
+      localizer_->setScanMatcher(std::make_unique<NdtScanMatcher>(map, params_.scan_matching.ndt));
+    }
     RCLCPP_INFO(get_logger(), "map received: %zu points", map->size());
   } catch (const std::invalid_argument & e) {
     RCLCPP_ERROR(get_logger(), "invalid map: %s", e.what());
@@ -117,12 +140,47 @@ void Amcl3dNode::onInitialPose(
   const rclcpp::Time stamp =
     rclcpp::Time(msg->header.stamp).nanoseconds() == 0 ? now() : rclcpp::Time(msg->header.stamp);
   localizer_->initialize(initial_pose, Time{stamp.nanoseconds()});
+  reported_expansion_resets_ = 0;
 
   const Pose & pose = initial_pose.pose;
   RCLCPP_INFO(
     get_logger(), "initialized at (%.2f, %.2f, %.2f) with %zu particles", pose.position.x(),
     pose.position.y(), pose.position.z(), localizer_->particles().size());
   publishEstimate(stamp);
+}
+
+void Amcl3dNode::onGlobalLocalization(
+  const std_srvs::srv::Trigger::Request::SharedPtr /*request*/,
+  std_srvs::srv::Trigger::Response::SharedPtr response)
+{
+  if (!global_sampler_) {
+    response->success = false;
+    response->message = "no map";
+    return;
+  }
+  const rclcpp::Time stamp = now();
+  localizer_->initialize(
+    [this](RandomGenerator & rng) { return global_sampler_->sample(rng); },
+    params_.global_localization.particle_num, Time{stamp.nanoseconds()});
+  reported_expansion_resets_ = 0;
+  if (localizer_params_.resampling.type != ResamplerType::kKld) {
+    RCLCPP_WARN(
+      get_logger(),
+      "global localization with systematic resampling keeps all %zu particles; use kld",
+      params_.global_localization.particle_num);
+  }
+  response->success = true;
+  response->message = "spread " + std::to_string(localizer_->particles().size()) +
+                      " particles over " + std::to_string(global_sampler_->cellNum()) + " cells";
+  RCLCPP_INFO(get_logger(), "global localization: %s", response->message.c_str());
+  publishEstimate(stamp);
+}
+
+void Amcl3dNode::addTwist(const Twist & twist, const builtin_interfaces::msg::Time & stamp)
+{
+  if (!localizer_->addTwist(twist, fromMsg(stamp))) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), kThrottleMs, "twist out of order, ignored");
+  }
 }
 
 void Amcl3dNode::onOdometry(const nav_msgs::msg::Odometry::ConstSharedPtr & msg)
@@ -134,9 +192,34 @@ void Amcl3dNode::onOdometry(const nav_msgs::msg::Odometry::ConstSharedPtr & msg)
       "odometry child_frame_id '%s' differs from base_frame_id '%s'", msg->child_frame_id.c_str(),
       params_.base_frame_id.c_str());
   }
-  if (!localizer_->addTwist(fromMsg(msg->twist.twist), fromMsg(msg->header.stamp))) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), kThrottleMs, "odometry out of order, ignored");
+  const Twist twist = fromMsg(msg->twist.twist);
+  if (params_.use_imu) {
+    odom_linear_velocity_ = twist.linear;  // combined with the angular velocity in onImu()
+    return;
   }
+  addTwist(twist, msg->header.stamp);
+}
+
+void Amcl3dNode::onImu(const sensor_msgs::msg::Imu::ConstSharedPtr & msg)
+{
+  if (!odom_linear_velocity_) {
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), kThrottleMs, "waiting for odometry");
+    return;
+  }
+  if (!base_from_imu_) {
+    const auto transform =
+      lookupTransform(params_.base_frame_id, msg->header.frame_id, rclcpp::Time(0));
+    if (!transform) {
+      return;
+    }
+    base_from_imu_ = Eigen::Quaterniond(transform->rotation());
+  }
+  Twist twist;
+  twist.linear = *odom_linear_velocity_;
+  twist.angular =
+    *base_from_imu_ *
+    Eigen::Vector3d(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+  addTwist(twist, msg->header.stamp);
 }
 
 void Amcl3dNode::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg)
@@ -160,12 +243,22 @@ void Amcl3dNode::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPt
       get_logger(), *get_clock(), kThrottleMs, "scan skipped: %s", toString(status));
     return;
   }
+  if (localizer_->expansionResetCount() > reported_expansion_resets_) {
+    reported_expansion_resets_ = localizer_->expansionResetCount();
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), kThrottleMs,
+      "expansion reset (best per-point likelihood %.3f), %zu so far",
+      localizer_->lastLikelihood().max, reported_expansion_resets_);
+  }
   publishEstimate(stamp);
 }
 
 void Amcl3dNode::publishEstimate(const rclcpp::Time & stamp)
 {
-  const PoseWithCovariance estimate = localizer_->estimate();
+  PoseWithCovariance estimate = localizer_->estimate();
+  if (const auto & refined = localizer_->refinedPose()) {
+    estimate.pose = *refined;  // the covariance still describes the particle cloud
+  }
 
   geometry_msgs::msg::PoseWithCovarianceStamped pose_msg;
   pose_msg.header.stamp = stamp;
