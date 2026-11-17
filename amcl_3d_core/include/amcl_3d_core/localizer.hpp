@@ -9,7 +9,7 @@
 
 #include "amcl_3d_core/map/point_cloud_map.hpp"
 #include "amcl_3d_core/measurement_model/point_cloud_measurement_model.hpp"
-#include "amcl_3d_core/motion_model/twist_motion_model.hpp"
+#include "amcl_3d_core/motion_model/motion_model_factory.hpp"
 #include "amcl_3d_core/particle_filter.hpp"
 #include "amcl_3d_core/resampler/kld_resampler.hpp"
 #include "amcl_3d_core/scan_filter.hpp"
@@ -31,7 +31,7 @@ struct LocalizerParams
   ScanFilter::Params scan_filter;
   /// Filtered scan points randomly selected per update. 0 uses all points.
   size_t scan_sample_num = 200;
-  TwistMotionModel::Params motion_model;
+  MotionModelParams motion_model;
   PointCloudMeasurementModel::Params point_cloud_measurement;
 
   struct Resampling
