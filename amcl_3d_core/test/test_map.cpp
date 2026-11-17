@@ -105,3 +105,85 @@ TEST(DistanceFieldMap, OutsideTheBandIsMaxDistance)
 }
 
 }  // namespace amcl_3d
+
+namespace amcl_3d
+{
+namespace
+{
+/// Random particles around the room, with full 3D orientations.
+ParticleSet makeParticles(size_t particle_num)
+{
+  std::mt19937 rng(3);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  ParticleSet particles(particle_num);
+  for (size_t i = 0; i < particle_num; ++i) {
+    Pose pose;
+    pose.position = Eigen::Vector3d(4.0 + 3.0 * uniform(rng), 2.5 + 2.0 * uniform(rng), 0.0);
+    pose.orientation =
+      Eigen::Quaterniond(1.0, 0.05 * uniform(rng), 0.05 * uniform(rng), uniform(rng)).normalized();
+    particles.setPose(i, pose);
+  }
+  return particles;
+}
+
+std::vector<Eigen::Vector3d> scanPoints(const PointCloud & scan)
+{
+  std::vector<Eigen::Vector3d> points;
+  for (const auto & p : scan) {
+    points.emplace_back(p.x, p.y, p.z);
+  }
+  return points;
+}
+
+/// The batched query must equal the sum of single queries, whatever the backend does inside.
+void expectBatchMatchesSingleQueries(const PointCloudMap & map)
+{
+  const ParticleSet particles = makeParticles(300);
+  Pose sensor_pose;
+  sensor_pose.position = Eigen::Vector3d(3.0, 2.0, 0.0);
+  const std::vector<Eigen::Vector3d> points =
+    scanPoints(*test::makeScan(*test::makeRoomMap(), sensor_pose));
+  const double clip = 0.5;
+
+  const Eigen::VectorXd sums = map.sumClippedSquaredDistances(particles, points, clip);
+  ASSERT_EQ(sums.size(), static_cast<Eigen::Index>(particles.size()));
+  for (size_t i = 0; i < particles.size(); ++i) {
+    const Pose pose = particles.pose(i);
+    double expected = 0.0;
+    for (const auto & point : points) {
+      expected += std::min(
+        map.squaredDistanceToNearest(pose.orientation * point + pose.position), clip * clip);
+    }
+    EXPECT_NEAR(sums(static_cast<Eigen::Index>(i)), expected, 1e-9 * points.size()) << i;
+  }
+}
+}  // namespace
+
+TEST(PointCloudMap, BatchedQueryMatchesSingleQueriesKdTree)
+{
+  expectBatchMatchesSingleQueries(KdTreeMap(test::makeRoomMap()));
+}
+
+TEST(PointCloudMap, BatchedQueryMatchesSingleQueriesDistanceField)
+{
+  expectBatchMatchesSingleQueries(DistanceFieldMap(*test::makeRoomMap(), {0.1, 1.0}));
+}
+
+TEST(PointCloudMap, BatchedQueryDoesNotDependOnThreadNum)
+{
+  DistanceFieldMap map(*test::makeRoomMap(), {0.1, 1.0});
+  const ParticleSet particles = makeParticles(1000);
+  Pose sensor_pose;
+  sensor_pose.position = Eigen::Vector3d(3.0, 2.0, 0.0);
+  const std::vector<Eigen::Vector3d> points =
+    scanPoints(*test::makeScan(*test::makeRoomMap(), sensor_pose));
+
+  map.setThreadNum(1);
+  const Eigen::VectorXd single = map.sumClippedSquaredDistances(particles, points, 1.0);
+  for (const size_t thread_num : {3, 0}) {
+    map.setThreadNum(thread_num);
+    EXPECT_EQ(map.sumClippedSquaredDistances(particles, points, 1.0), single) << thread_num;
+  }
+}
+
+}  // namespace amcl_3d

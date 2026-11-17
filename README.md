@@ -60,9 +60,10 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Prediction**: odometry twists (optionally with IMU angular velocity) are buffered and integrated
   on SE(3) up to each scan stamp; white velocity noise independent of the odometry rate
 - **Correction**: point-to-map distance likelihood with clipping, on
-  - `distance_field` (default): precomputed sparse field of nearest map points, ~17x faster
+  - `distance_field` (default): precomputed sparse field of nearest map points, ~12x faster
     updates than `kdtree` with the same accuracy on KITTI (see Evaluation), or
   - `kdtree`: exact nearest neighbor search
+  - particles are evaluated in parallel on `map.thread_num` CPU threads (OpenMP)
 - **Scan preprocessing**: range / height crop, voxel grid, random subsampling
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
 - **Recovery**: augmented MCL, expansion resetting, global localization
@@ -77,7 +78,7 @@ Localizer                      time handling, resampling policy, recovery, refin
  │   └─ ParticleSet            structure of arrays + log weights (vectorization / GPU friendly)
  ├─ MotionModel                TwistMotionModel
  ├─ MeasurementModel           PointCloudMeasurementModel, PoseMeasurementModel
- │   └─ PointCloudMap          KdTreeMap, DistanceFieldMap
+ │   └─ PointCloudMap          KdTreeMap, DistanceFieldMap (batched query: OpenMP or override)
  ├─ Resampler                  SystematicResampler, KldResampler
  ├─ ScanFilter
  └─ ScanMatcher                NdtScanMatcher
@@ -101,15 +102,24 @@ KITTI odometry sequence 07 (695 m, urban), evaluated with
 
 | configuration | translation RMSE [m] | yaw RMSE [deg] | max [m] | update mean / p95 [ms] |
 |---|---|---|---|---|
-| `kdtree` | 0.159-0.164 | 0.18-0.20 | 0.56 | 82.5 / 97.7 |
-| `distance_field` 0.2 m (default) | 0.154-0.165 | 0.20-0.21 | 0.57 | **4.7 / 5.9** |
-| `distance_field` 0.1 m | 0.162-0.165 | 0.19-0.21 | 0.56 | 7.7 / 10.3 |
-| `distance_field` 0.2 m + NDT | **0.138-0.145** | **0.17-0.19** | 0.51 | 43.2 / 73.0 |
-| `distance_field` 0.2 m + KLD (~100 particles) | 0.226-0.241 | 0.28-0.29 | 1.01 | 2.0 / 2.6 |
+| `kdtree` | 0.159-0.164 | 0.18-0.20 | 0.56 | 23.6 / 27.4 |
+| `distance_field` 0.2 m (default) | 0.154-0.165 | 0.20-0.21 | 0.57 | **1.9 / 2.3** |
+| `distance_field` 0.1 m | 0.162-0.165 | 0.19-0.21 | 0.56 | 2.4 / 3.0 |
+| `distance_field` 0.2 m + NDT | 0.138-0.145 | 0.17-0.19 | 0.51 | 37.9 / 65.1 |
+| `distance_field` 0.2 m + KLD (~100 particles) | 0.226-0.241 | 0.28-0.29 | 1.01 | 1.2 / 1.5 |
+| `distance_field` 0.2 m, 10000 particles | **0.089-0.091** | **0.12** | 0.36 | 16.5 / 19.2 |
 
-Ranges over 3 seeds; timing single threaded on one core of a desktop CPU. No frame was lost
-(error > 1 m) except one frame with KLD. The distance field takes 4 s to build and 227 MB
-(1.2 GB at 0.1 m) for this route.
+Ranges over 3 seeds; timing with `map.thread_num: 4` on an i9-14900K (the default 500 particles
+take 4.1 / 5.0 ms on one thread, 1.5 / 1.8 ms on 8). The results do not depend on the thread
+count. No frame was lost (error > 1 m) except one frame with KLD. The distance field takes 4 s to
+build and 227 MB (1.2 GB at 0.1 m) for this route.
+
+More particles pay off: 10000 particles nearly halve the error of the default 500, which is what
+a GPU backend is for.
+
+Using every hardware thread (`map.thread_num: 0`, 32 threads) was slower than 4-16 threads
+(6.2 ms): idle OpenMP threads spin on the cores the rest of the update runs on. Setting
+`OMP_WAIT_POLICY=passive` avoids that.
 
 Caveats: map and localized scans come from the same drive (not a test of robustness to map
 changes), the KITTI ground truth itself has errors in the order of 0.1 m, and scans are not
@@ -122,11 +132,11 @@ deskewed. Reproduce:
 
 `likelihood_benchmark` measures the likelihood evaluation alone (synthetic 40 m map):
 
-| particles x points | `kdtree` [ms] | `distance_field` 0.1 m [ms] |
+| particles x points | `kdtree` 1 / 4 threads [ms] | `distance_field` 0.1 m 1 / 4 threads [ms] |
 |---|---|---|
-| 500 x 100 | 80 | 3.1 |
-| 2000 x 300 | 965 | 30 |
-| 10000 x 300 | 4836 | 178 |
+| 500 x 100 | 77 / 22 | 2.4 / 0.6 |
+| 2000 x 300 | 971 / 256 | 23 / 6.4 |
+| 10000 x 300 | 4709 / 1290 | 120 / 29 |
 
 ## Limitations
 
@@ -141,7 +151,6 @@ deskewed. Reproduce:
 ## Roadmap
 
 - CUDA backend for the likelihood computation (on top of `DistanceFieldMap` and `ParticleSet`)
-- CPU parallelization of the likelihood
 - Map tiling for large areas; evaluation on more datasets (map changes, other sensors)
 
 ## References

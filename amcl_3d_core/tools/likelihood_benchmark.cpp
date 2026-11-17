@@ -1,7 +1,8 @@
 // Measures the cost of one likelihood evaluation (the hot spot of the filter) for different
 // particle counts, scan point counts and map representations, on a synthetic map.
 //
-//   likelihood_benchmark [repetitions=5]
+//   likelihood_benchmark [repetitions=5] [threads=4 (0: all)]
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -91,6 +92,7 @@ double measureMs(
 int main(int argc, char ** argv)
 {
   const int repetitions = argc > 1 ? std::atoi(argv[1]) : 5;
+  const int threads = argc > 2 ? std::max(0, std::atoi(argv[2])) : 4;
   const PointCloud::Ptr cloud = makeMap();
 
   auto start = std::chrono::steady_clock::now();
@@ -101,8 +103,10 @@ int main(int argc, char ** argv)
   const auto field = std::make_shared<DistanceFieldMap>(*cloud, DistanceFieldMap::Params{0.1, 1.0});
   const double field_build =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  kdtree->setThreadNum(static_cast<size_t>(threads));
+  field->setThreadNum(static_cast<size_t>(threads));
 
-  std::printf("map: %zu points\n", cloud->size());
+  std::printf("map: %zu points, likelihood threads: %d (0: all)\n", cloud->size(), threads);
   std::printf(
     "build: kdtree %.2f s, distance_field(0.1 m) %.2f s, %.0f MB\n", kdtree_build, field_build,
     static_cast<double>(field->memoryBytes()) / 1e6);
