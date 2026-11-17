@@ -117,7 +117,7 @@ TEST_F(CudaDistanceFieldMapTest, LocalizerConverges)
   params.initial_particle_num = 2000;
   params.scan_sample_num = 300;
   params.scan_filter.voxel_size = 0.3;
-  params.motion_model = TwistMotionModel::Params{0.0, 0.02, 0.0, 0.005};
+  params.motion_model.twist = TwistMotionModel::Params{0.0, 0.02, 0.0, 0.005};
   Localizer localizer(params);
   localizer.setMap(map_);
   PoseWithCovariance initial;

@@ -48,7 +48,7 @@ const char * toString(LocalizerStatus status)
 Localizer::Localizer(const LocalizerParams & params)
 : params_(params),
   filter_(params.random_seed),
-  motion_model_(std::make_unique<TwistMotionModel>(params.motion_model)),
+  motion_model_(createMotionModel(params.motion_model)),
   resampler_(createResampler(params.resampling)),
   injection_sampler_(
     GaussianPoseSampler::fromStandardDeviations(params.augmented_mcl.injection_stddev)),

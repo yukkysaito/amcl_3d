@@ -1,5 +1,7 @@
 #include "amcl_3d/parameters.hpp"
 
+#include "amcl_3d_core/motion_model/motion_model_factory.hpp"
+
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -132,21 +134,53 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
     node, "thread_num", defaults.point_cloud_measurement.thread_num,
     "CPU threads of the filter (0: all hardware threads, often slower)");
   p.point_cloud_measurement.thread_num = thread_num;
-  p.motion_model.thread_num = thread_num;
 
   auto & motion = p.motion_model;
-  motion.linear_noise_scale = declare<double>(
-    node, "motion_model.linear_noise_scale", defaults.motion_model.linear_noise_scale,
+  motion.type = toMotionModelType(declare<std::string>(
+    node, "motion_model.type", "twist", "'twist' (generic 6-DoF) or 'vehicle' (car-like)"));
+  auto & twist = motion.twist;
+  const auto & twist_defaults = defaults.motion_model.twist;
+  twist.thread_num = thread_num;
+  twist.linear_noise_scale = declare<double>(
+    node, "motion_model.twist.linear_noise_scale", twist_defaults.linear_noise_scale,
     "Linear velocity noise proportional to |v| [1/sqrt(s)]");
-  motion.linear_noise_bias = declare<double>(
-    node, "motion_model.linear_noise_bias", defaults.motion_model.linear_noise_bias,
+  twist.linear_noise_bias = declare<double>(
+    node, "motion_model.twist.linear_noise_bias", twist_defaults.linear_noise_bias,
     "Constant linear velocity noise [m/s*sqrt(s)]");
-  motion.angular_noise_scale = declare<double>(
-    node, "motion_model.angular_noise_scale", defaults.motion_model.angular_noise_scale,
+  twist.angular_noise_scale = declare<double>(
+    node, "motion_model.twist.angular_noise_scale", twist_defaults.angular_noise_scale,
     "Angular velocity noise proportional to |w| [1/sqrt(s)]");
-  motion.angular_noise_bias = declare<double>(
-    node, "motion_model.angular_noise_bias", defaults.motion_model.angular_noise_bias,
+  twist.angular_noise_bias = declare<double>(
+    node, "motion_model.twist.angular_noise_bias", twist_defaults.angular_noise_bias,
     "Constant angular velocity noise [rad/s*sqrt(s)]");
+  auto & vehicle = motion.vehicle;
+  const auto & vehicle_defaults = defaults.motion_model.vehicle;
+  vehicle.thread_num = thread_num;
+  vehicle.speed_noise_scale = declare<double>(
+    node, "motion_model.vehicle.speed_noise_scale", vehicle_defaults.speed_noise_scale,
+    "Forward speed noise proportional to |v| [1/sqrt(s)]");
+  vehicle.speed_noise_bias = declare<double>(
+    node, "motion_model.vehicle.speed_noise_bias", vehicle_defaults.speed_noise_bias,
+    "Constant forward speed noise while moving [m/s*sqrt(s)]");
+  vehicle.yaw_rate_noise_scale = declare<double>(
+    node, "motion_model.vehicle.yaw_rate_noise_scale", vehicle_defaults.yaw_rate_noise_scale,
+    "Yaw rate noise proportional to |w| [1/sqrt(s)]");
+  vehicle.yaw_rate_noise_bias = declare<double>(
+    node, "motion_model.vehicle.yaw_rate_noise_bias", vehicle_defaults.yaw_rate_noise_bias,
+    "Constant yaw rate noise while moving [rad/s*sqrt(s)]");
+  vehicle.lateral_noise_scale = declare<double>(
+    node, "motion_model.vehicle.lateral_noise_scale", vehicle_defaults.lateral_noise_scale,
+    "Lateral slip velocity noise per |v| [1/sqrt(s)]");
+  vehicle.vertical_noise_scale = declare<double>(
+    node, "motion_model.vehicle.vertical_noise_scale", vehicle_defaults.vertical_noise_scale,
+    "Vertical slip velocity noise per |v| (suspension, base frame misalignment) [1/sqrt(s)]");
+  vehicle.attitude_noise_scale = declare<double>(
+    node, "motion_model.vehicle.attitude_noise_scale", vehicle_defaults.attitude_noise_scale,
+    "Roll / pitch rate noise per |v| (road grade and bank changes) [rad/m*sqrt(s)]");
+  vehicle.min_noise_speed = declare<double>(
+    node, "motion_model.vehicle.min_noise_speed", vehicle_defaults.min_noise_speed,
+    "The noise is computed for at least this speed, so that the estimate refines while stopped "
+    "[m/s]");
 
   auto & measurement = p.point_cloud_measurement;
   measurement.max_distance = declare<double>(

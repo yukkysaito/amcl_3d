@@ -42,7 +42,9 @@ add_library(${PROJECT_NAME} SHARED
   src/math.cpp
   src/measurement_model/point_cloud_measurement_model.cpp
   src/measurement_model/pose_measurement_model.cpp
+  src/motion_model/motion_model_factory.cpp
   src/motion_model/twist_motion_model.cpp
+  src/motion_model/vehicle_motion_model.cpp
   src/particle_filter.cpp
   src/particle_set.cpp
   src/random.cpp

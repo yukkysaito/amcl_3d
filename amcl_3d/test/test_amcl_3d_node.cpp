@@ -124,8 +124,8 @@ protected:
       {"initial_particle_num", 300},
       {"scan_sample_num", 200},
       {"scan_filter.voxel_size", 0.2},
-      {"motion_model.linear_noise_bias", 0.02},
-      {"motion_model.angular_noise_bias", 0.005},
+      {"motion_model.twist.linear_noise_bias", 0.02},
+      {"motion_model.twist.angular_noise_bias", 0.005},
     };
     all.insert(all.end(), parameters.begin(), parameters.end());
     options.parameter_overrides(all);

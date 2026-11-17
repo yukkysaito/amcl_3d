@@ -70,7 +70,11 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 ## Features
 
 - **Prediction**: odometry twists (optionally with IMU angular velocity) are buffered and integrated
-  on SE(3) up to each scan stamp; white velocity noise independent of the odometry rate
+  on SE(3) up to each scan stamp; white velocity noise independent of the odometry rate, with
+  - `twist`: generic 6-DoF motion with isotropic noise, or
+  - `vehicle`: car-like motion (forward speed and yaw rate, base frame at the rear axle) with
+    anisotropic noise growing with the speed; 25-30 % lower translation and 35 % lower yaw
+    error than `twist` on KITTI with wheel-like odometry (see Evaluation)
 - **Correction**: point-to-map distance likelihood with clipping, on
   - `distance_field` (default): precomputed sparse field of nearest map points, ~12x faster
     updates than `kdtree` with the same accuracy on KITTI (see Evaluation), or
@@ -152,6 +156,31 @@ estimate on one thread.
 Using every hardware thread (`thread_num: 0`, 32 threads) was slower than 4-16 threads
 (6.2 ms): idle OpenMP threads spin on the cores the rest of the update runs on. Setting
 `OMP_WAIT_POLICY=passive` avoids that.
+
+### Motion models
+
+Same protocol, but with odometry like a car provides it (forward speed and yaw rate only,
+`odometry=wheel`) and the base frame at the rear axle center (`base_x=0.86 base_pitch=0.0143`,
+estimated from the ground truth as the point with the least lateral velocity and the direction of
+travel), 3 seeds:
+
+| `motion_model.type` | translation RMSE [m] | yaw RMSE [deg] | max [m] |
+|---|---|---|---|
+| `twist` | 0.158-0.176 | 0.20-0.22 | 0.59 |
+| `vehicle` | **0.115-0.122** | **0.13-0.14** | 0.42 |
+| `vehicle`, base frame not aligned (`base_pitch=0`) | 0.129-0.134 | 0.13-0.14 | 0.58 |
+
+The velodyne of KITTI is pitched by 0.84 deg against the direction of travel. A vehicle model
+without vertical slip noise moved the particles along that tilted axis, sank by 0.1 m/s and
+diverged; `vertical_noise_scale` makes it robust to such a misalignment (last row). During the
+5 s stop of the sequence both models are equally accurate. Freezing the particles while stopped
+was tried and dropped: it gave no gain on KITTI, but a car initialized while parked then stayed
+at the error of its best initial particle (the first scan collapses the cloud), so the noise keeps
+a floor of `min_noise_speed`.
+
+```bash
+./kitti_evaluation <kitti>/dataset 07 motion=vehicle odometry=wheel base_x=0.86 base_pitch=0.0143
+```
 
 Caveats: map and localized scans come from the same drive (not a test of robustness to map
 changes), the KITTI ground truth itself has errors in the order of 0.1 m, and scans are not

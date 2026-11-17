@@ -27,7 +27,7 @@ LocalizerParams noiselessParams()
 {
   LocalizerParams params;
   params.initial_particle_num = 10;
-  params.motion_model = TwistMotionModel::Params{0.0, 0.0, 0.0, 0.0};
+  params.motion_model.twist = TwistMotionModel::Params{0.0, 0.0, 0.0, 0.0};
   return params;
 }
 }  // namespace
@@ -90,7 +90,8 @@ protected:
     params_.initial_particle_num = 500;
     params_.scan_sample_num = 300;
     params_.point_cloud_measurement.sigma = 0.2;
-    params_.motion_model = TwistMotionModel::Params{0.0, 0.02, 0.0, 0.005};  // keeps diversity
+    params_.motion_model.twist =
+      TwistMotionModel::Params{0.0, 0.02, 0.0, 0.005};  // keeps diversity
   }
 
   /// Initial guess off by `offset` [m] in x with the given covariance diagonal.
@@ -151,6 +152,24 @@ TEST_F(RoomLocalizationTest, ConvergesWithDistanceFieldMap)
   runUpdates(localizer, 30);
   EXPECT_LT(positionError(localizer), 0.1);
   EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
+}
+
+TEST_F(RoomLocalizationTest, VehicleModelConvergesWhenInitializedAtStandstill)
+{
+  // A car often starts localizing while parked (no motion at all): the estimate must still refine
+  // beyond the best initial particle, which needs some diffusion while stopped.
+  params_.scan_filter.voxel_size = 0.3;
+  params_.motion_model.type = MotionModelParams::Type::kVehicle;
+  for (const uint64_t seed : {1, 2, 3, 4, 5}) {
+    params_.random_seed = seed;
+    Localizer localizer(params_);
+    localizer.setMap(std::make_shared<DistanceFieldMap>(*map_, DistanceFieldMap::Params{0.1, 1.0}));
+    localizer.initialize(
+      initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
+    runUpdates(localizer, 30);
+    EXPECT_LT(positionError(localizer), 0.1) << "seed " << seed;
+    EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0) << "seed " << seed;
+  }
 }
 
 TEST_F(RoomLocalizationTest, RejectsMapShorterThanMeasurementRange)

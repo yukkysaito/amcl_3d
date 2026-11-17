@@ -14,8 +14,10 @@
 // - The filter is initialized off the ground truth by `init_offset` [m] and `init_yaw_offset`.
 //
 // Options (defaults in Config): map=distance_field|kdtree device=cpu|cuda resolution=<m>
-// threads=<n> resampler=systematic|kld particles=<n> sample=<n> scan_matching=0|1
-// expansion_reset=0|1 seed=<n> frames=<n> output=<trajectory.csv>
+// threads=<n> motion=twist|vehicle odometry=full|wheel base_x=<m> base_pitch=<rad>
+// resampler=systematic|kld
+// particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n> frames=<n>
+// output=<trajectory.csv>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -29,6 +31,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <pcl/common/transforms.h>
 
 #include "amcl_3d_core/localizer.hpp"
 #include "amcl_3d_core/map/map_factory.hpp"
@@ -52,7 +56,18 @@ struct Config
   std::string map_type = "distance_field";
   std::string device = "cpu";  // cuda: likelihood of the distance field on the GPU
   double map_resolution = 0.2;
-  size_t threads = 4;  // likelihood threads, 0: all
+  size_t threads = 4;            // likelihood threads, 0: all
+  std::string motion = "twist";  // motion model: twist | vehicle
+  /// Odometry fed to the filter: "full" (all 6 twist components of the ground truth, corrupted) or
+  /// "wheel" (forward speed and yaw rate only, like wheel odometry with a gyro).
+  std::string odometry = "full";
+  /// x of the velodyne in the localized base frame [m]. 0.86 puts the base at the rear axle center
+  /// (estimated from the ground truth as the point with the least lateral velocity), where the
+  /// non-holonomic vehicle model holds.
+  double base_x = 0.0;
+  /// Pitch [rad] of the velodyne in the base frame. 0.0143 aligns the base x axis with the
+  /// direction of travel (estimated from the ground truth, mean vz / vx = 0.0143).
+  double base_pitch = 0.0;
   std::string resampler = "systematic";
   size_t particles = 500;
   size_t sample = 200;
@@ -96,6 +111,10 @@ Config parseConfig(int argc, char ** argv)
   take("resolution", c.map_resolution);
   take("threads", c.threads);
   take("device", c.device);
+  take("motion", c.motion);
+  take("odometry", c.odometry);
+  take("base_x", c.base_x);
+  take("base_pitch", c.base_pitch);
   take("resampler", c.resampler);
   take("particles", c.particles);
   take("sample", c.sample);
@@ -106,6 +125,9 @@ Config parseConfig(int argc, char ** argv)
   take("output", c.output);
   if (!kv.empty()) {
     throw std::invalid_argument("unknown option: " + kv.begin()->first);
+  }
+  if (c.odometry != "full" && c.odometry != "wheel") {
+    throw std::invalid_argument("odometry must be full or wheel: " + c.odometry);
   }
   return c;
 }
@@ -163,7 +185,9 @@ int main(int argc, char ** argv)
     config.resampler == "kld" ? ResamplerType::kKld : ResamplerType::kSystematic;
   params.expansion_reset.enabled = config.expansion_reset;
   params.point_cloud_measurement.thread_num = config.threads;
-  params.motion_model.thread_num = config.threads;
+  params.motion_model.type = toMotionModelType(config.motion);
+  params.motion_model.twist.thread_num = config.threads;
+  params.motion_model.vehicle.thread_num = config.threads;
   Localizer localizer(params);
   MapParams map_params;
   map_params.type = toMapType(config.map_type);
@@ -178,8 +202,22 @@ int main(int argc, char ** argv)
   const double map_seconds =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - map_start).count();
 
+  // ground truth of the base frame: velodyne pose * velodyne_from_base
+  const Eigen::Isometry3d base_from_velodyne =
+    Eigen::Translation3d(config.base_x, 0.0, 0.0) *
+    Eigen::AngleAxisd(config.base_pitch, Eigen::Vector3d::UnitY());
+  std::vector<Pose> truth(sequence.poses.size());
+  for (size_t k = 0; k < truth.size(); ++k) {
+    const Eigen::Isometry3d world_from_base = Eigen::Translation3d(sequence.poses[k].position) *
+                                              sequence.poses[k].orientation *
+                                              base_from_velodyne.inverse();
+    truth[k].position = world_from_base.translation();
+    truth[k].orientation = Eigen::Quaterniond(world_from_base.rotation()).normalized();
+  }
+  const Eigen::Matrix4f base_from_velodyne_matrix = base_from_velodyne.matrix().cast<float>();
+
   PoseWithCovariance initial;
-  initial.pose = sequence.poses[1];
+  initial.pose = truth[1];
   initial.pose.position.x() += config.init_offset;
   initial.pose.orientation =
     expMap(Eigen::Vector3d(0, 0, config.init_yaw_offset)) * initial.pose.orientation;
@@ -189,7 +227,7 @@ int main(int argc, char ** argv)
   // ---- localize the odd frames ----
   std::mt19937 noise_rng(static_cast<unsigned>(config.seed));
   std::normal_distribution<double> standard_normal(0.0, 1.0);
-  Pose dead_reckoning = sequence.poses[1];
+  Pose dead_reckoning = truth[1];
   Errors filter_errors, dead_reckoning_errors;
   std::vector<double> update_ms, particle_nums;
   size_t refined_count = 0;
@@ -201,7 +239,11 @@ int main(int argc, char ** argv)
 
   for (size_t k = 3; k < frame_num; k += 2) {
     const double dt = sequence.times[k] - sequence.times[k - 2];
-    Twist twist = TwistMotionModel::twistBetween(sequence.poses[k - 2], sequence.poses[k], dt);
+    Twist twist = TwistMotionModel::twistBetween(truth[k - 2], truth[k], dt);
+    if (config.odometry == "wheel") {
+      twist.linear.y() = twist.linear.z() = 0.0;
+      twist.angular.x() = twist.angular.y() = 0.0;
+    }
     twist.linear *= 1.0 + config.odom_scale_error;
     twist.linear +=
       config.odom_linear_noise * Eigen::Vector3d(standard_normal(noise_rng), 0.0, 0.0);
@@ -210,7 +252,8 @@ int main(int argc, char ** argv)
     dead_reckoning = TwistMotionModel::integrate(dead_reckoning, twist, dt);
     localizer.addTwist(twist, Time::fromSeconds(sequence.times[k - 2]));
 
-    const PointCloud scan = loadScan(sequence, k);
+    PointCloud scan;
+    pcl::transformPointCloud(loadScan(sequence, k), scan, base_from_velodyne_matrix);
     const auto start = std::chrono::steady_clock::now();
     const LocalizerStatus status =
       localizer.updateWithPointCloud(scan, Time::fromSeconds(sequence.times[k]));
@@ -225,20 +268,20 @@ int main(int argc, char ** argv)
     if (localizer.refinedPose()) {
       estimate = *localizer.refinedPose();
     }
-    const Pose & truth = sequence.poses[k];
+    const Pose & true_pose = truth[k];
     if ((k - 1) / 2 >= config.warmup_frames) {
       refined_count += localizer.refinedPose() ? 1 : 0;
-      filter_errors.add(estimate, truth);
-      dead_reckoning_errors.add(dead_reckoning, truth);
+      filter_errors.add(estimate, true_pose);
+      dead_reckoning_errors.add(dead_reckoning, true_pose);
       update_ms.push_back(ms);
       particle_nums.push_back(static_cast<double>(localizer.particles().size()));
     }
     if (csv) {
-      csv << sequence.times[k] << ',' << truth.position.x() << ',' << truth.position.y() << ','
-          << truth.position.z() << ',' << yawOf(truth.orientation) << ',' << estimate.position.x()
-          << ',' << estimate.position.y() << ',' << estimate.position.z() << ','
-          << yawOf(estimate.orientation) << ','
-          << (estimate.position - truth.position).head<2>().norm() << ',' << ms << ','
+      csv << sequence.times[k] << ',' << true_pose.position.x() << ',' << true_pose.position.y()
+          << ',' << true_pose.position.z() << ',' << yawOf(true_pose.orientation) << ','
+          << estimate.position.x() << ',' << estimate.position.y() << ',' << estimate.position.z()
+          << ',' << yawOf(estimate.orientation) << ','
+          << (estimate.position - true_pose.position).head<2>().norm() << ',' << ms << ','
           << localizer.particles().size() << '\n';
     }
   }
@@ -253,9 +296,11 @@ int main(int argc, char ** argv)
     filter_errors.translation.begin(), filter_errors.translation.end(),
     [](double e) { return e > 1.0; }));
   std::printf(
-    "map=%s res=%.2f device=%s threads=%zu resampler=%s particles=%zu sample=%zu ndt=%d reset=%d "
-    "seed=%lu\n",
+    "map=%s res=%.2f device=%s threads=%zu motion=%s odometry=%s base_x=%.2f base_pitch=%.4f "
+    "resampler=%s "
+    "particles=%zu sample=%zu ndt=%d reset=%d seed=%lu\n",
     config.map_type.c_str(), config.map_resolution, config.device.c_str(), config.threads,
+    config.motion.c_str(), config.odometry.c_str(), config.base_x, config.base_pitch,
     config.resampler.c_str(), config.particles, config.sample, config.scan_matching,
     config.expansion_reset, static_cast<unsigned long>(config.seed));
   std::printf(
