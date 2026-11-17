@@ -88,9 +88,9 @@ NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & locali
     node, "use_imu", false, "Use the IMU angular velocity instead of the odometry one");
 
   p.map_type = toMapType(declare<std::string>(
-    node, "map.type", "kdtree", "'kdtree' (exact) or 'distance_field' (fast)"));
+    node, "map.type", "distance_field", "'distance_field' (fast) or 'kdtree' (exact, slow)"));
   p.distance_field.resolution =
-    declare<double>(node, "map.resolution", 0.1, "Voxel size of the distance field [m]");
+    declare<double>(node, "map.resolution", 0.2, "Voxel size of the distance field [m]");
   p.distance_field.max_distance = localizer_params.point_cloud_measurement.max_distance;
 
   p.global_localization.particle_num = declareCount(

@@ -41,6 +41,17 @@ Pose TwistMotionModel::integrate(const Pose & pose, const Twist & twist, double 
   return moved;
 }
 
+Twist TwistMotionModel::twistBetween(const Pose & from, const Pose & to, double dt)
+{
+  const Eigen::Quaterniond from_inverse = from.orientation.conjugate();
+  const Eigen::Vector3d rotation_vector = logMap(from_inverse * to.orientation);
+  const Eigen::Vector3d local_translation = from_inverse * (to.position - from.position);
+  Twist twist;
+  twist.angular = rotation_vector / dt;
+  twist.linear = leftJacobian(rotation_vector).inverse() * local_translation / dt;
+  return twist;
+}
+
 void TwistMotionModel::predict(
   const Twist & twist, double dt, ParticleSet & particles, RandomGenerator & rng) const
 {

@@ -49,6 +49,15 @@ else()
   target_compile_options(${PROJECT_NAME} PRIVATE -Wno-unknown-pragmas)
 endif()
 
+# Evaluation on public datasets (no extra dependency)
+option(AMCL3D_BUILD_TOOLS "Build evaluation tools" ON)
+if(AMCL3D_BUILD_TOOLS)
+  foreach(tool kitti_evaluation likelihood_benchmark)
+    add_executable(${tool} tools/${tool}.cpp)
+    target_link_libraries(${tool} ${PROJECT_NAME})
+  endforeach()
+endif()
+
 set(TEST_SOURCES
   test/test_map.cpp
   test/test_math.cpp
@@ -68,6 +77,9 @@ if(ament_cmake_FOUND)
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
   )
+  if(AMCL3D_BUILD_TOOLS)
+    install(TARGETS kitti_evaluation likelihood_benchmark DESTINATION lib/${PROJECT_NAME})
+  endif()
   ament_export_targets(${PROJECT_NAME}Targets HAS_LIBRARY_TARGET)
   ament_export_dependencies(Eigen3 PCL)
 

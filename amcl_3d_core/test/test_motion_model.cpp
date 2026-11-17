@@ -40,6 +40,19 @@ TEST(TwistMotionModel, QuarterCircleAndBack)
   EXPECT_LT(back.position.norm(), 1e-12);
 }
 
+TEST(TwistMotionModel, TwistBetweenIsInverseOfIntegrate)
+{
+  Pose from;
+  from.position = Eigen::Vector3d(1.0, -2.0, 0.5);
+  from.orientation =
+    Eigen::Quaterniond(Eigen::AngleAxisd(0.7, Eigen::Vector3d(1, 2, 3).normalized()));
+  const Twist twist = makeTwist({3.0, 0.5, -0.2}, {0.1, -0.2, 0.8});
+  const Pose to = TwistMotionModel::integrate(from, twist, 0.5);
+  const Twist recovered = TwistMotionModel::twistBetween(from, to, 0.5);
+  EXPECT_TRUE(recovered.linear.isApprox(twist.linear, 1e-9));
+  EXPECT_TRUE(recovered.angular.isApprox(twist.angular, 1e-9));
+}
+
 TEST(TwistMotionModel, ClimbsSlopeInThreeDimensions)
 {
   // pitched up by 30 deg (nose up is a negative rotation about Y), driving forward climbs in z

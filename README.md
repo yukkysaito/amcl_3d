@@ -11,7 +11,7 @@
 
 ## Build
 
-Tested with ROS 2 Humble.
+Built and tested with ROS 2 Humble and Jazzy (see [CI](.github/workflows/ci.yml)).
 
 ```bash
 cd <ros2_ws>/src
@@ -60,8 +60,9 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Prediction**: odometry twists (optionally with IMU angular velocity) are buffered and integrated
   on SE(3) up to each scan stamp; white velocity noise independent of the odometry rate
 - **Correction**: point-to-map distance likelihood with clipping, on
-  - `kdtree`: exact nearest neighbor, or
-  - `distance_field`: precomputed sparse field, ~30x faster queries, ~1-2 cm less accurate
+  - `distance_field` (default): precomputed sparse field of nearest map points, ~17x faster
+    updates than `kdtree` with the same accuracy on KITTI (see Evaluation), or
+  - `kdtree`: exact nearest neighbor search
 - **Scan preprocessing**: range / height crop, voxel grid, random subsampling
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
 - **Recovery**: augmented MCL, expansion resetting, global localization
@@ -86,9 +87,53 @@ GroundPoseSampler              initial distribution for global localization
 `MotionModel`, `MeasurementModel`, `PointCloudMap`, `Resampler` and `ScanMatcher` are the
 extension points.
 
+## Evaluation
+
+KITTI odometry sequence 07 (695 m, urban), evaluated with
+[`kitti_evaluation`](amcl_3d_core/tools/kitti_evaluation.cpp) (no ROS needed):
+
+- map: even frames registered with the ground truth poses (0.2 m voxels)
+- localized: odd frames (5 Hz, 540 frames after a 10 frame warm-up), initial guess off by
+  0.5 m / 1.7 deg
+- odometry: KITTI has none, so the twist is derived from the ground truth with a 2 % scale error,
+  a 0.005 rad/s yaw rate bias and white noise; dead reckoning with it drifts 30-36 m (RMSE)
+- defaults otherwise: 500 particles, 200 scan points, systematic resampling
+
+| configuration | translation RMSE [m] | yaw RMSE [deg] | max [m] | update mean / p95 [ms] |
+|---|---|---|---|---|
+| `kdtree` | 0.159-0.164 | 0.18-0.20 | 0.56 | 82.5 / 97.7 |
+| `distance_field` 0.2 m (default) | 0.154-0.165 | 0.20-0.21 | 0.57 | **4.7 / 5.9** |
+| `distance_field` 0.1 m | 0.162-0.165 | 0.19-0.21 | 0.56 | 7.7 / 10.3 |
+| `distance_field` 0.2 m + NDT | **0.138-0.145** | **0.17-0.19** | 0.51 | 43.2 / 73.0 |
+| `distance_field` 0.2 m + KLD (~100 particles) | 0.226-0.241 | 0.28-0.29 | 1.01 | 2.0 / 2.6 |
+
+Ranges over 3 seeds; timing single threaded on one core of a desktop CPU. No frame was lost
+(error > 1 m) except one frame with KLD. The distance field takes 4 s to build and 227 MB
+(1.2 GB at 0.1 m) for this route.
+
+Caveats: map and localized scans come from the same drive (not a test of robustness to map
+changes), the KITTI ground truth itself has errors in the order of 0.1 m, and scans are not
+deskewed. Reproduce:
+
+```bash
+# sequence 07 from https://www.cvlibs.net/datasets/kitti/eval_odometry.php (velodyne, calib, poses)
+./kitti_evaluation <kitti>/dataset 07 map=distance_field resolution=0.2 seed=1 output=trajectory.csv
+```
+
+`likelihood_benchmark` measures the likelihood evaluation alone (synthetic 40 m map):
+
+| particles x points | `kdtree` [ms] | `distance_field` 0.1 m [ms] |
+|---|---|---|
+| 500 x 100 | 80 | 3.1 |
+| 2000 x 300 | 965 | 30 |
+| 10000 x 300 | 4836 | 178 |
+
 ## Limitations
 
-- Validated on synthetic data only so far; real-data evaluation is pending.
+- Memory of the distance field grows with the mapped area (~0.3 MB per meter of route at 0.2 m);
+  very large maps need tiling (not implemented).
+- With KLD sampling the particle count shrinks to `min_particle_num`, which costs accuracy
+  (see Evaluation); raise it if accuracy matters more than computation.
 - Global localization assumes a ground vehicle (single ground level) and can lock onto a wrong
   mode in (nearly) symmetric environments.
 - PCL works in single precision: shift maps in large coordinates (e.g. UTM) near the origin.
@@ -97,7 +142,7 @@ extension points.
 
 - CUDA backend for the likelihood computation (on top of `DistanceFieldMap` and `ParticleSet`)
 - CPU parallelization of the likelihood
-- Evaluation on public datasets, CI
+- Map tiling for large areas; evaluation on more datasets (map changes, other sensors)
 
 ## References
 

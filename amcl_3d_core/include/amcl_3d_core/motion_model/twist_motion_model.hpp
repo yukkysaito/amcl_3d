@@ -30,6 +30,8 @@ public:
 
   /// Moves a single pose without noise.
   static Pose integrate(const Pose & pose, const Twist & twist, double dt);
+  /// Inverse of integrate(): the constant body twist that moves `from` to `to` in `dt` seconds.
+  static Twist twistBetween(const Pose & from, const Pose & to, double dt);
 
 private:
   Params params_;
