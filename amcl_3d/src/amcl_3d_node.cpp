@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "amcl_3d/conversions.hpp"
+#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
@@ -96,6 +97,13 @@ void Amcl3dNode::setMap(const PointCloud::Ptr & map)
         get_logger(), "distance field: %zu blocks, %.1f MB", field->blockNum(),
         static_cast<double>(field->memoryBytes()) / 1e6);
       point_cloud_map = field;
+      if (params_.map_use_cuda) {
+        const auto cuda_field = std::make_shared<CudaDistanceFieldMap>(field);
+        RCLCPP_INFO(
+          get_logger(), "distance field uploaded to the GPU: %.1f MB",
+          static_cast<double>(cuda_field->deviceMemoryBytes()) / 1e6);
+        point_cloud_map = cuda_field;
+      }
     } else {
       point_cloud_map = std::make_shared<KdTreeMap>(map);
     }

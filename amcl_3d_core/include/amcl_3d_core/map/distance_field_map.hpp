@@ -39,6 +39,21 @@ public:
   size_t blockNum() const { return block_index_.size(); }
   size_t memoryBytes() const { return site_offsets_.size() * sizeof(int8_t); }
 
+  // Raw storage, for backends that copy the field (e.g. CudaDistanceFieldMap).
+
+  /// Marker in the x offset of voxels with no map point within max_distance.
+  static constexpr int8_t kNoSite = -128;
+  const Params & params() const { return params_; }
+  /// Voxels per block edge.
+  int blockSize() const { return block_size_; }
+  /// [m] per quantization step of the site offsets.
+  double offsetScale() const { return offset_scale_; }
+  /// Offset (x, y, z) from each voxel center to its site, block after block in the order of
+  /// blockCoordinates(), x fastest within a block.
+  const std::vector<int8_t> & siteOffsets() const { return site_offsets_; }
+  /// Block coordinate (voxel coordinate / blockSize()) of each block in siteOffsets().
+  std::vector<Eigen::Vector3i> blockCoordinates() const;
+
 private:
   struct KeyHash
   {

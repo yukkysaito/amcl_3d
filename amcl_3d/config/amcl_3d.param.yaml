@@ -16,6 +16,9 @@
       # CPU threads of the likelihood evaluation; 0 uses every hardware thread, which was slower
       # than 4-16 threads on a 32 thread CPU (idle OpenMP threads spin on the shared cores)
       thread_num: 4
+      # cpu, or cuda: likelihood of the distance_field on the GPU (build amcl_3d_core with
+      #   --cmake-args -DAMCL3D_USE_CUDA=ON); worth it with many particles (see README)
+      device: cpu
 
     use_imu: false  # take the angular velocity from the "imu" topic instead of the odometry
 

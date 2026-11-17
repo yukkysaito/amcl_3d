@@ -15,11 +15,26 @@ find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common kdtree registration)
 find_package(OpenMP)
 
+# Optional CUDA backend of the likelihood (CudaDistanceFieldMap). Without it, a stub reports the
+# missing backend at run time, so users need no #ifdef.
+option(AMCL3D_USE_CUDA "Build the CUDA backend" OFF)
+if(AMCL3D_USE_CUDA)
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    if(CMAKE_VERSION VERSION_LESS 3.24)
+      message(FATAL_ERROR "Set CMAKE_CUDA_ARCHITECTURES (e.g. 86) or use CMake >= 3.24")
+    endif()
+    set(CMAKE_CUDA_ARCHITECTURES native)  # the GPU of the build machine
+  endif()
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+endif()
+
 # The library itself is plain C++ (Eigen + PCL); ROS is not required.
 add_library(${PROJECT_NAME} SHARED
   src/gaussian_pose_sampler.cpp
   src/ground_pose_sampler.cpp
   src/localizer.cpp
+  src/map/cuda_distance_field_map.cpp
   src/map/distance_field_map.cpp
   src/map/kdtree_map.cpp
   src/map/point_cloud_map.cpp
@@ -37,12 +52,21 @@ add_library(${PROJECT_NAME} SHARED
 )
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic>)
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
 )
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(AMCL3D_USE_CUDA)
+  target_sources(${PROJECT_NAME} PRIVATE src/map/cuda/device_distance_field.cu)
+  target_compile_options(${PROJECT_NAME} PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>)
+  target_link_libraries(${PROJECT_NAME} PRIVATE CUDA::cudart)
+else()
+  target_sources(${PROJECT_NAME} PRIVATE src/map/cuda/device_distance_field_stub.cpp)
+endif()
 target_link_libraries(${PROJECT_NAME} PUBLIC Eigen3::Eigen ${PCL_LIBRARIES})
 if(OpenMP_CXX_FOUND)
   target_link_libraries(${PROJECT_NAME} PRIVATE OpenMP::OpenMP_CXX)
@@ -67,6 +91,7 @@ set(TEST_SOURCES
   test/test_resampler.cpp
   test/test_scan_filter.cpp
   test/test_localizer.cpp
+  test/test_cuda_distance_field_map.cpp
 )
 
 find_package(ament_cmake QUIET)
@@ -88,6 +113,9 @@ if(ament_cmake_FOUND)
     find_package(ament_cmake_gtest REQUIRED)
     ament_add_gtest(test_${PROJECT_NAME} ${TEST_SOURCES} TIMEOUT 120)
     target_link_libraries(test_${PROJECT_NAME} ${PROJECT_NAME})
+    if(AMCL3D_USE_CUDA)
+      target_compile_definitions(test_${PROJECT_NAME} PRIVATE AMCL3D_TEST_WITH_CUDA)
+    endif()
   endif()
   ament_package()
 else()
@@ -98,6 +126,9 @@ else()
     enable_testing()
     add_executable(test_${PROJECT_NAME} ${TEST_SOURCES})
     target_link_libraries(test_${PROJECT_NAME} ${PROJECT_NAME} GTest::gtest_main)
+    if(AMCL3D_USE_CUDA)
+      target_compile_definitions(test_${PROJECT_NAME} PRIVATE AMCL3D_TEST_WITH_CUDA)
+    endif()
     add_test(NAME test_${PROJECT_NAME} COMMAND test_${PROJECT_NAME})
   endif()
 endif()

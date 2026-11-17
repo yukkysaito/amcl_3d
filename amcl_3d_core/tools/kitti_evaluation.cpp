@@ -13,7 +13,8 @@
 //   twist is reported as a baseline.
 // - The filter is initialized off the ground truth by `init_offset` [m] and `init_yaw_offset`.
 //
-// Options (defaults in Config): map=kdtree|distance_field resolution=<m> resampler=systematic|kld
+// Options (defaults in Config): map=kdtree|distance_field resolution=<m> device=cpu|cuda
+// resampler=systematic|kld
 // threads=<n> particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n>
 // frames=<n> output=<trajectory.csv>
 #include <algorithm>
@@ -31,6 +32,7 @@
 #include <vector>
 
 #include "amcl_3d_core/localizer.hpp"
+#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
 #include "amcl_3d_core/math.hpp"
@@ -48,7 +50,8 @@ struct Config
 {
   std::string map_type = "kdtree";
   double map_resolution = 0.2;
-  size_t threads = 4;  // likelihood threads, 0: all
+  size_t threads = 4;          // likelihood threads, 0: all
+  std::string device = "cpu";  // cuda: likelihood of the distance field on the GPU
   std::string resampler = "systematic";
   size_t particles = 500;
   size_t sample = 200;
@@ -91,6 +94,7 @@ Config parseConfig(int argc, char ** argv)
   take("map", c.map_type);
   take("resolution", c.map_resolution);
   take("threads", c.threads);
+  take("device", c.device);
   take("resampler", c.resampler);
   take("particles", c.particles);
   take("sample", c.sample);
@@ -101,6 +105,9 @@ Config parseConfig(int argc, char ** argv)
   take("output", c.output);
   if (!kv.empty()) {
     throw std::invalid_argument("unknown option: " + kv.begin()->first);
+  }
+  if (c.device != "cpu" && !(c.device == "cuda" && c.map_type == "distance_field")) {
+    throw std::invalid_argument("device must be cpu, or cuda with map=distance_field");
   }
   return c;
 }
@@ -287,6 +294,9 @@ int main(int argc, char ** argv)
       DistanceFieldMap::Params{config.map_resolution, params.point_cloud_measurement.max_distance});
     map_megabytes = static_cast<double>(field->memoryBytes()) / 1e6;
     point_cloud_map = field;
+    if (config.device == "cuda") {
+      point_cloud_map = std::make_shared<CudaDistanceFieldMap>(field);
+    }
   } else {
     point_cloud_map = std::make_shared<KdTreeMap>(map);
   }
@@ -373,10 +383,11 @@ int main(int argc, char ** argv)
     filter_errors.translation.begin(), filter_errors.translation.end(),
     [](double e) { return e > 1.0; }));
   std::printf(
-    "map=%s res=%.2f threads=%zu resampler=%s particles=%zu sample=%zu ndt=%d reset=%d seed=%lu\n",
-    config.map_type.c_str(), config.map_resolution, config.threads, config.resampler.c_str(),
-    config.particles, config.sample, config.scan_matching, config.expansion_reset,
-    static_cast<unsigned long>(config.seed));
+    "map=%s res=%.2f device=%s threads=%zu resampler=%s particles=%zu sample=%zu ndt=%d reset=%d "
+    "seed=%lu\n",
+    config.map_type.c_str(), config.map_resolution, config.device.c_str(), config.threads,
+    config.resampler.c_str(), config.particles, config.sample, config.scan_matching,
+    config.expansion_reset, static_cast<unsigned long>(config.seed));
   std::printf(
     "  map: %zu points, built in %.1f s, distance field %.0f MB\n", map->size(), map_seconds,
     map_megabytes);

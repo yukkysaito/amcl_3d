@@ -16,6 +16,7 @@
 
 #include "amcl_3d/amcl_3d_node.hpp"
 #include "amcl_3d/conversions.hpp"
+#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
 
 namespace amcl_3d
 {
@@ -274,6 +275,21 @@ TEST_F(Amcl3dNodeTest, ScanMatchingRefinesPublishedPose)
   // tighter than the particle filter alone (0.1 m, 1 deg in LocalizesFromScansAndPublishesTf)
   EXPECT_LT(positionError(), 0.02);
   EXPECT_LT(orientationError(), 0.5 * M_PI / 180.0);
+}
+
+TEST_F(Amcl3dNodeTest, LocalizesWithCuda)
+{
+  if (!CudaDistanceFieldMap::available()) {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({{"map.device", "cuda"}});
+    EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);  // reported at startup
+    GTEST_SKIP() << "no CUDA device (or built without CUDA)";
+  }
+  start({{"map.device", "cuda"}, {"initial_particle_num", 3000}});
+  publishInitialPose();
+  publishScans(30);
+  EXPECT_LT(positionError(), 0.1);
+  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
 }  // namespace amcl_3d
