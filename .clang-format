@@ -1,0 +1,19 @@
+# ROS 2 (ament_uncrustify-like) style
+BasedOnStyle: Google
+ColumnLimit: 100
+AccessModifierOffset: -2
+AlignAfterOpenBracket: AlwaysBreak
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterStruct: true
+  AfterEnum: true
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerIndentWidth: 0
+ContinuationIndentWidth: 2
+DerivePointerAlignment: false
+PointerAlignment: Middle
+ReflowComments: false
+IncludeBlocks: Preserve

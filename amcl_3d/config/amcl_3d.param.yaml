@@ -1,0 +1,91 @@
+/**:
+  ros__parameters:
+    # frames
+    global_frame_id: map
+    odom_frame_id: odom
+    base_frame_id: base_link
+
+    # map: load a PCD file at startup, or leave empty to subscribe to the "map" topic
+    map_pcd_file: ""
+    map:
+      # distance_field: precomputed nearest map points, ~17x faster updates than kdtree with the
+      #   same accuracy on KITTI 07 (see README); memory ~0.3 MB per meter of route at 0.2 m
+      # kdtree: exact nearest neighbor search, slow (~80 ms per update with the defaults)
+      type: distance_field
+      resolution: 0.2  # [m] distance_field voxel size
+
+    use_imu: false  # take the angular velocity from the "imu" topic instead of the odometry
+
+    # tf / output
+    transform_tolerance: 0.1  # [s] future dating of map->odom
+    tf_timeout: 0.1           # [s]
+    publish_tf: true
+    publish_particles: true
+    # used when the initial pose has no covariance: x, y, z [m], roll, pitch, yaw [rad]
+    default_initial_pose_stddev: [0.5, 0.5, 0.1, 0.02, 0.02, 0.2]
+
+    # particle filter
+    initial_particle_num: 500
+    scan_sample_num: 200  # scan points per update (0: all)
+    random_seed: -1       # -1: random
+
+    # white velocity noise, std = scale * |velocity| + bias (per sqrt(s), on each axis)
+    motion_model:
+      linear_noise_scale: 0.1   # [1/sqrt(s)]
+      linear_noise_bias: 0.1    # [m/s*sqrt(s)]
+      angular_noise_scale: 0.1  # [1/sqrt(s)]
+      angular_noise_bias: 0.02  # [rad/s*sqrt(s)]
+
+    # applied to each scan in the base frame before sampling
+    scan_filter:
+      min_range: 1.0    # [m] from the base frame origin (removes the vehicle body)
+      max_range: 100.0  # [m]
+      min_z: -100.0     # [m]
+      max_z: 100.0      # [m]
+      voxel_size: 0.5   # [m] uniform density; 0 disables
+
+    point_cloud_measurement:
+      max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
+      sigma: 0.2         # [m]
+
+    resampling:
+      type: systematic          # systematic | kld
+      ess_ratio_threshold: 0.5  # resample when ESS / N < threshold
+      kld:
+        min_particle_num: 100
+        max_particle_num: 5000
+        epsilon: 0.05
+        delta: 0.01
+        bin_size_xyz: 0.5  # [m]
+        bin_size_yaw: 0.2  # [rad]
+
+    # spread all particles when even the best particle explains the scan poorly (emcl)
+    expansion_reset:
+      enabled: false
+      likelihood_threshold: 0.05  # per-point likelihood exp(-d^2 / (2 sigma^2)) of the best particle
+      stddev: [0.3, 0.3, 0.05, 0.01, 0.01, 0.1]  # x, y, z [m], roll, pitch, yaw [rad]
+
+    # ~/global_localization service (std_srvs/Trigger); use resampling.type: kld with it
+    global_localization:
+      particle_num: 20000
+      cell_size: 1.0    # [m] grid to find the ground height
+      base_height: 0.0  # [m] base frame above the ground
+
+    # refine the published pose by NDT scan matching
+    scan_matching:
+      enabled: false
+      max_correction: 1.0  # [m] reject matches farther than this from the particle estimate
+      feedback: false      # also correct the particles (uses the scan twice: overconfident)
+      feedback_stddev: [0.1, 0.1, 0.1, 0.01, 0.01, 0.02]
+      ndt:
+        resolution: 1.0
+        step_size: 0.1
+        transformation_epsilon: 0.01
+        max_iterations: 30
+        max_fitness: 1.0  # [m^2]
+
+    augmented_mcl:
+      enabled: false
+      alpha_slow: 0.001
+      alpha_fast: 0.1
+      injection_stddev: [1.0, 1.0, 0.1, 0.05, 0.05, 0.5]  # x, y, z [m], roll, pitch, yaw [rad]
