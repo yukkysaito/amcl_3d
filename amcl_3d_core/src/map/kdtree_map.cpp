@@ -26,4 +26,9 @@ double KdTreeMap::squaredDistanceToNearest(const Eigen::Vector3d & point) const
   return static_cast<double>(squared_distances.front());
 }
 
+std::string KdTreeMap::description() const
+{
+  return "k-d tree over " + std::to_string(kdtree_.getInputCloud()->size()) + " points";
+}
+
 }  // namespace amcl_3d

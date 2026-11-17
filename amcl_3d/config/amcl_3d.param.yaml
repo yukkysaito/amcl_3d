@@ -13,9 +13,6 @@
       # kdtree: exact nearest neighbor search, slow (~24 ms per update with the defaults)
       type: distance_field
       resolution: 0.2  # [m] distance_field voxel size
-      # CPU threads of the likelihood evaluation; 0 uses every hardware thread, which was slower
-      # than 4-16 threads on a 32 thread CPU (idle OpenMP threads spin on the shared cores)
-      thread_num: 4
       # cpu, or cuda: likelihood of the distance_field on the GPU (build amcl_3d_core with
       #   --cmake-args -DAMCL3D_USE_CUDA=ON); worth it with many particles (see README)
       device: cpu
@@ -53,6 +50,9 @@
     point_cloud_measurement:
       max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
       sigma: 0.2         # [m]
+      # CPU threads of the likelihood (ignored with map.device cuda); 0 uses every hardware thread,
+      # which was slower than 4-16 threads on a 32 thread CPU (idle OpenMP threads spin)
+      thread_num: 4
 
     resampling:
       type: systematic          # systematic | kld

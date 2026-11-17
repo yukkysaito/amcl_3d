@@ -1,7 +1,5 @@
 #include "amcl_3d/parameters.hpp"
 
-#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
-
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -56,19 +54,9 @@ ResamplerType toResamplerType(const std::string & name)
   throw std::invalid_argument("parameter 'resampling.type' must be 'systematic' or 'kld': " + name);
 }
 
-NodeParams::MapType toMapType(const std::string & name)
-{
-  if (name == "kdtree") {
-    return NodeParams::MapType::kKdTree;
-  }
-  if (name == "distance_field") {
-    return NodeParams::MapType::kDistanceField;
-  }
-  throw std::invalid_argument("parameter 'map.type' must be 'kdtree' or 'distance_field': " + name);
-}
 }  // namespace
 
-NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & localizer_params)
+NodeParams declareNodeParams(rclcpp::Node & node)
 {
   NodeParams p;
   p.global_frame_id =
@@ -89,28 +77,13 @@ NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & locali
   p.use_imu = declare<bool>(
     node, "use_imu", false, "Use the IMU angular velocity instead of the odometry one");
 
-  p.map_type = toMapType(declare<std::string>(
+  p.map.type = toMapType(declare<std::string>(
     node, "map.type", "distance_field", "'distance_field' (fast) or 'kdtree' (exact, slow)"));
-  p.map_thread_num = declareCount(
-    node, "map.thread_num", 4,
-    "CPU threads of the likelihood evaluation (0: all hardware threads, often slower)");
-  const auto device = declare<std::string>(
-    node, "map.device", "cpu", "'cpu' or 'cuda' (distance_field only, needs a CUDA build)");
-  if (device != "cpu" && device != "cuda") {
-    throw std::invalid_argument("parameter 'map.device' must be 'cpu' or 'cuda': " + device);
-  }
-  p.map_use_cuda = device == "cuda";
-  if (p.map_use_cuda && p.map_type != NodeParams::MapType::kDistanceField) {
-    throw std::invalid_argument("parameter 'map.device' cuda requires map.type distance_field");
-  }
-  if (p.map_use_cuda && !CudaDistanceFieldMap::available()) {
-    throw std::invalid_argument(
-      "parameter 'map.device' is cuda, but amcl_3d_core was built without CUDA "
-      "(-DAMCL3D_USE_CUDA=ON) or no CUDA device is present");
-  }
-  p.distance_field.resolution =
+  p.map.device = toMapDevice(declare<std::string>(
+    node, "map.device", "cpu", "'cpu' or 'cuda' (distance_field only, needs a CUDA build)"));
+  p.map.resolution =
     declare<double>(node, "map.resolution", 0.2, "Voxel size of the distance field [m]");
-  p.distance_field.max_distance = localizer_params.point_cloud_measurement.max_distance;
+  validate(p.map);  // fail at startup, not when the map arrives
 
   p.global_localization.particle_num = declareCount(
     node, "global_localization.particle_num", 20000, "Particles drawn over the whole map");
@@ -176,6 +149,9 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
   measurement.sigma = declare<double>(
     node, "point_cloud_measurement.sigma", defaults.point_cloud_measurement.sigma,
     "Std dev of the point-to-map distance [m]");
+  measurement.thread_num = declareCount(
+    node, "point_cloud_measurement.thread_num", defaults.point_cloud_measurement.thread_num,
+    "CPU threads of the likelihood evaluation (0: all hardware threads, often slower)");
 
   auto & resampling = p.resampling;
   resampling.type = toResamplerType(

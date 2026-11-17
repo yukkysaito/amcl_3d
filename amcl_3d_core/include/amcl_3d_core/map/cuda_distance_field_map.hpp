@@ -38,10 +38,11 @@ public:
   }
   double maxDistance() const override { return field_->maxDistance(); }
 
-  /// Throws std::runtime_error on a CUDA error.
+  /// Runs on the GPU (`thread_num` is ignored). Throws std::runtime_error on a CUDA error.
   Eigen::VectorXd sumClippedSquaredDistances(
     const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points,
-    double clip_distance) const override;
+    double clip_distance, size_t thread_num) const override;
+  std::string description() const override;
 
   const DistanceFieldMap & field() const { return *field_; }
   size_t deviceMemoryBytes() const;

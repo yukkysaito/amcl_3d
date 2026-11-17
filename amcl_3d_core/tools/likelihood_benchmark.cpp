@@ -67,7 +67,7 @@ std::vector<Eigen::Vector3d> makeScan(size_t point_num, std::mt19937 & rng)
 
 double measureMs(
   const std::shared_ptr<const PointCloudMap> & map, size_t particle_num, size_t point_num,
-  int repetitions)
+  int repetitions, size_t thread_num)
 {
   PoseWithCovariance initial;
   initial.pose.position = Eigen::Vector3d(20.0, 20.0, 1.0);
@@ -75,7 +75,7 @@ double measureMs(
   ParticleFilter filter(1);
   filter.initialize(initial, particle_num);
   std::mt19937 rng(1);
-  const PointCloudMeasurementModel model(map, makeScan(point_num, rng), {1.0, 0.2});
+  const PointCloudMeasurementModel model(map, makeScan(point_num, rng), {1.0, 0.2, thread_num});
 
   double sum = 0.0;  // keeps the result alive
   const auto start = std::chrono::steady_clock::now();
@@ -93,7 +93,7 @@ double measureMs(
 int main(int argc, char ** argv)
 {
   const int repetitions = argc > 1 ? std::atoi(argv[1]) : 5;
-  const int threads = argc > 2 ? std::max(0, std::atoi(argv[2])) : 4;
+  const auto threads = static_cast<size_t>(argc > 2 ? std::max(0, std::atoi(argv[2])) : 4);
   const PointCloud::Ptr cloud = makeMap();
 
   auto start = std::chrono::steady_clock::now();
@@ -104,17 +104,15 @@ int main(int argc, char ** argv)
   const auto field = std::make_shared<DistanceFieldMap>(*cloud, DistanceFieldMap::Params{0.1, 1.0});
   const double field_build =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-  kdtree->setThreadNum(static_cast<size_t>(threads));
-  field->setThreadNum(static_cast<size_t>(threads));
 
-  std::printf("map: %zu points, likelihood threads: %d (0: all)\n", cloud->size(), threads);
+  std::printf("map: %zu points, likelihood threads: %zu (0: all)\n", cloud->size(), threads);
   std::printf(
     "build: kdtree %.2f s, distance_field(0.1 m) %.2f s, %.0f MB\n", kdtree_build, field_build,
     static_cast<double>(field->memoryBytes()) / 1e6);
   std::shared_ptr<CudaDistanceFieldMap> cuda_field;
   if (CudaDistanceFieldMap::available()) {
     cuda_field = std::make_shared<CudaDistanceFieldMap>(field);
-    measureMs(cuda_field, 100, 100, 1);  // CUDA context and buffer setup
+    measureMs(cuda_field, 100, 100, 1, threads);  // CUDA context and buffer setup
   } else {
     std::printf("CUDA: not available (build with -DAMCL3D_USE_CUDA=ON and a CUDA device)\n");
   }
@@ -124,10 +122,11 @@ int main(int argc, char ** argv)
     for (const size_t point_num : {100, 300, 2000}) {
       // the k-d tree takes seconds for the large cases
       const bool large = particle_num * point_num > 1000000;
-      const double kd_ms = large ? NAN : measureMs(kdtree, particle_num, point_num, repetitions);
-      const double field_ms = measureMs(field, particle_num, point_num, repetitions);
+      const double kd_ms =
+        large ? NAN : measureMs(kdtree, particle_num, point_num, repetitions, threads);
+      const double field_ms = measureMs(field, particle_num, point_num, repetitions, threads);
       const double cuda_ms =
-        cuda_field ? measureMs(cuda_field, particle_num, point_num, repetitions) : NAN;
+        cuda_field ? measureMs(cuda_field, particle_num, point_num, repetitions, threads) : NAN;
       std::printf(
         "%10zu %8zu %12.1f %12.1f %12.2f\n", particle_num, point_num, kd_ms, field_ms, cuda_ms);
     }

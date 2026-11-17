@@ -19,6 +19,11 @@ public:
   {
     double max_distance = 1.0;  // [m]
     double sigma = 0.2;         // [m]
+    /// CPU threads of the evaluation (0: all hardware threads; ignored by GPU maps). Small on
+    /// purpose: the localizer shares the CPU with other nodes, and every hardware thread was
+    /// measured to be slower than a few, because idle OpenMP threads spin on the cores the rest of
+    /// the update runs on (see README).
+    size_t thread_num = 4;
   };
 
   /// `points` are in the base frame. The caller selects/downsamples them beforehand.

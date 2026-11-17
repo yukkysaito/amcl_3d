@@ -13,10 +13,9 @@
 //   twist is reported as a baseline.
 // - The filter is initialized off the ground truth by `init_offset` [m] and `init_yaw_offset`.
 //
-// Options (defaults in Config): map=kdtree|distance_field resolution=<m> device=cpu|cuda
-// resampler=systematic|kld
-// threads=<n> particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n>
-// frames=<n> output=<trajectory.csv>
+// Options (defaults in Config): map=distance_field|kdtree device=cpu|cuda resolution=<m>
+// threads=<n> resampler=systematic|kld particles=<n> sample=<n> scan_matching=0|1
+// expansion_reset=0|1 seed=<n> frames=<n> output=<trajectory.csv>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -32,14 +31,16 @@
 #include <vector>
 
 #include "amcl_3d_core/localizer.hpp"
-#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
-#include "amcl_3d_core/map/distance_field_map.hpp"
-#include "amcl_3d_core/map/kdtree_map.hpp"
+#include "amcl_3d_core/map/map_factory.hpp"
 #include "amcl_3d_core/math.hpp"
 #include "amcl_3d_core/scan_filter.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
+#include "kitti_dataset.hpp"
+#include "statistics.hpp"
 
 using namespace amcl_3d;
+using namespace evaluation;
+using kitti::loadScan;
 
 namespace
 {
@@ -48,10 +49,10 @@ namespace
 
 struct Config
 {
-  std::string map_type = "kdtree";
-  double map_resolution = 0.2;
-  size_t threads = 4;          // likelihood threads, 0: all
+  std::string map_type = "distance_field";
   std::string device = "cpu";  // cuda: likelihood of the distance field on the GPU
+  double map_resolution = 0.2;
+  size_t threads = 4;  // likelihood threads, 0: all
   std::string resampler = "systematic";
   size_t particles = 500;
   size_t sample = 200;
@@ -106,87 +107,7 @@ Config parseConfig(int argc, char ** argv)
   if (!kv.empty()) {
     throw std::invalid_argument("unknown option: " + kv.begin()->first);
   }
-  if (c.device != "cpu" && !(c.device == "cuda" && c.map_type == "distance_field")) {
-    throw std::invalid_argument("device must be cpu, or cuda with map=distance_field");
-  }
   return c;
-}
-
-// ---------------------------------------------------------------------------------------------
-// KITTI loading
-
-/// 3x4 row-major matrix line -> isometry
-Eigen::Isometry3d parseMatrix34(std::istream & stream)
-{
-  Eigen::Matrix4d m = Eigen::Matrix4d::Identity();
-  for (int r = 0; r < 3; ++r) {
-    for (int c = 0; c < 4; ++c) {
-      stream >> m(r, c);
-    }
-  }
-  return Eigen::Isometry3d(m);
-}
-
-struct Sequence
-{
-  std::vector<double> times;
-  /// Velodyne poses in a z-up world frame (the first velodyne frame).
-  std::vector<Pose> poses;
-  std::string velodyne_dir;
-};
-
-Sequence loadSequence(const std::string & dataset_dir, const std::string & sequence)
-{
-  const std::string sequence_dir = dataset_dir + "/sequences/" + sequence;
-  Sequence s;
-  s.velodyne_dir = sequence_dir + "/velodyne";
-
-  std::ifstream calib(sequence_dir + "/calib.txt");
-  Eigen::Isometry3d camera_from_velodyne = Eigen::Isometry3d::Identity();
-  for (std::string line; std::getline(calib, line);) {
-    if (line.rfind("Tr:", 0) == 0) {
-      std::istringstream stream(line.substr(3));
-      camera_from_velodyne = parseMatrix34(stream);
-    }
-  }
-
-  std::ifstream times(sequence_dir + "/times.txt");
-  for (double t; times >> t;) {
-    s.times.push_back(t);
-  }
-
-  // ground truth: camera poses in the first camera frame (y down, z forward)
-  std::ifstream poses(dataset_dir + "/poses/" + sequence + ".txt");
-  for (std::string line; std::getline(poses, line);) {
-    std::istringstream stream(line);
-    const Eigen::Isometry3d world_camera_from_camera = parseMatrix34(stream);
-    const Eigen::Isometry3d velodyne_pose =
-      camera_from_velodyne.inverse() * world_camera_from_camera * camera_from_velodyne;
-    Pose pose;
-    pose.position = velodyne_pose.translation();
-    pose.orientation = Eigen::Quaterniond(velodyne_pose.rotation()).normalized();
-    s.poses.push_back(pose);
-  }
-  if (s.times.empty() || s.times.size() != s.poses.size()) {
-    throw std::runtime_error("inconsistent times / poses in " + sequence_dir);
-  }
-  return s;
-}
-
-PointCloud loadScan(const Sequence & s, size_t frame)
-{
-  char name[16];
-  std::snprintf(name, sizeof(name), "%06zu.bin", frame);
-  std::ifstream file(s.velodyne_dir + "/" + name, std::ios::binary);
-  if (!file) {
-    throw std::runtime_error(std::string("missing scan ") + name);
-  }
-  PointCloud cloud;
-  float point[4];  // x, y, z, reflectance
-  while (file.read(reinterpret_cast<char *>(point), sizeof(point))) {
-    cloud.push_back(pcl::PointXYZ(point[0], point[1], point[2]));
-  }
-  return cloud;
 }
 
 PointCloud toCloud(const std::vector<Eigen::Vector3d> & points, const Pose & pose)
@@ -201,50 +122,6 @@ PointCloud toCloud(const std::vector<Eigen::Vector3d> & points, const Pose & pos
   return cloud;
 }
 
-// ---------------------------------------------------------------------------------------------
-// statistics
-
-double yawOf(const Eigen::Quaterniond & q)
-{
-  const Eigen::Vector3d heading = q * Eigen::Vector3d::UnitX();
-  return std::atan2(heading.y(), heading.x());
-}
-
-struct Errors
-{
-  std::vector<double> translation;  // [m], horizontal
-  std::vector<double> yaw;          // [rad]
-  void add(const Pose & estimate, const Pose & truth)
-  {
-    translation.push_back((estimate.position - truth.position).head<2>().norm());
-    const double d = yawOf(estimate.orientation) - yawOf(truth.orientation);
-    yaw.push_back(std::abs(std::atan2(std::sin(d), std::cos(d))));
-  }
-};
-
-struct Summary
-{
-  double rmse, mean, p95, max;
-};
-
-Summary summarize(std::vector<double> values)
-{
-  Summary s{0, 0, 0, 0};
-  if (values.empty()) {
-    return s;
-  }
-  double sum = 0.0, squares = 0.0;
-  for (const double v : values) {
-    sum += v;
-    squares += v * v;
-  }
-  std::sort(values.begin(), values.end());
-  s.rmse = std::sqrt(squares / values.size());
-  s.mean = sum / values.size();
-  s.p95 = values[static_cast<size_t>(0.95 * (values.size() - 1))];
-  s.max = values.back();
-  return s;
-}
 }  // namespace
 
 int main(int argc, char ** argv)
@@ -254,7 +131,7 @@ int main(int argc, char ** argv)
     return 1;
   }
   const Config config = parseConfig(argc, argv);
-  const Sequence sequence = loadSequence(argv[1], argv[2]);
+  const kitti::Sequence sequence = kitti::loadSequence(argv[1], argv[2]);
   const size_t frame_num =
     config.frames == 0 ? sequence.poses.size() : std::min(config.frames, sequence.poses.size());
 
@@ -285,22 +162,14 @@ int main(int argc, char ** argv)
   params.resampling.type =
     config.resampler == "kld" ? ResamplerType::kKld : ResamplerType::kSystematic;
   params.expansion_reset.enabled = config.expansion_reset;
+  params.point_cloud_measurement.thread_num = config.threads;
   Localizer localizer(params);
-  double map_megabytes = 0.0;  // distance field only
-  std::shared_ptr<PointCloudMap> point_cloud_map;
-  if (config.map_type == "distance_field") {
-    const auto field = std::make_shared<DistanceFieldMap>(
-      *map,
-      DistanceFieldMap::Params{config.map_resolution, params.point_cloud_measurement.max_distance});
-    map_megabytes = static_cast<double>(field->memoryBytes()) / 1e6;
-    point_cloud_map = field;
-    if (config.device == "cuda") {
-      point_cloud_map = std::make_shared<CudaDistanceFieldMap>(field);
-    }
-  } else {
-    point_cloud_map = std::make_shared<KdTreeMap>(map);
-  }
-  point_cloud_map->setThreadNum(config.threads);
+  MapParams map_params;
+  map_params.type = toMapType(config.map_type);
+  map_params.device = toMapDevice(config.device);
+  map_params.resolution = config.map_resolution;
+  const auto point_cloud_map =
+    createPointCloudMap(map, map_params, params.point_cloud_measurement.max_distance);
   localizer.setMap(point_cloud_map);
   if (config.scan_matching) {
     localizer.setScanMatcher(std::make_unique<NdtScanMatcher>(map, NdtScanMatcher::Params{}));
@@ -389,8 +258,8 @@ int main(int argc, char ** argv)
     config.resampler.c_str(), config.particles, config.sample, config.scan_matching,
     config.expansion_reset, static_cast<unsigned long>(config.seed));
   std::printf(
-    "  map: %zu points, built in %.1f s, distance field %.0f MB\n", map->size(), map_seconds,
-    map_megabytes);
+    "  map: %zu points, built in %.1f s, %s\n", map->size(), map_seconds,
+    point_cloud_map->description().c_str());
   std::printf(
     "  frames: %zu evaluated, lost (>1 m): %zu, refined by NDT: %zu\n",
     filter_errors.translation.size(), lost, refined_count);

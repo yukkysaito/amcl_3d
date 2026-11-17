@@ -14,31 +14,10 @@ namespace amcl_3d
 {
 namespace
 {
-/// Particles around the room with full 3D orientations.
-ParticleSet makeParticles(size_t particle_num)
-{
-  std::mt19937 rng(7);
-  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
-  ParticleSet particles(particle_num);
-  for (size_t i = 0; i < particle_num; ++i) {
-    Pose pose;
-    pose.position = Eigen::Vector3d(4.0 + 4.0 * uniform(rng), 2.5 + 3.0 * uniform(rng), 0.0);
-    pose.orientation =
-      Eigen::Quaterniond(1.0, 0.1 * uniform(rng), 0.1 * uniform(rng), uniform(rng)).normalized();
-    particles.setPose(i, pose);
-  }
-  return particles;
-}
-
 /// Scan points plus points far outside the map and a non finite one.
 std::vector<Eigen::Vector3d> makePoints()
 {
-  Pose sensor_pose;
-  sensor_pose.position = Eigen::Vector3d(3.0, 2.0, 0.0);
-  std::vector<Eigen::Vector3d> points;
-  for (const auto & p : *test::makeScan(*test::makeRoomMap(), sensor_pose)) {
-    points.emplace_back(p.x, p.y, p.z);
-  }
+  std::vector<Eigen::Vector3d> points = test::makeRoomScanPoints();
   points.emplace_back(1e3, -1e3, 50.0);
   points.emplace_back(-1e12, 0.0, 0.0);
   points.emplace_back(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0);
@@ -76,42 +55,45 @@ TEST(CudaDistanceFieldMap, ReportsMissingBackend)
 
 TEST_F(CudaDistanceFieldMapTest, MatchesCpuField)
 {
-  const ParticleSet particles = makeParticles(2000);
+  const ParticleSet particles = test::makeRoomParticles(2000);
   const std::vector<Eigen::Vector3d> points = makePoints();
   for (const double clip : {0.5, 1.0, 3.0}) {  // 3.0 is beyond the field's max_distance
-    const Eigen::VectorXd cpu = field_->sumClippedSquaredDistances(particles, points, clip);
-    const Eigen::VectorXd gpu = map_->sumClippedSquaredDistances(particles, points, clip);
+    const Eigen::VectorXd cpu = field_->sumClippedSquaredDistances(particles, points, clip, 1);
+    const Eigen::VectorXd gpu = map_->sumClippedSquaredDistances(particles, points, clip, 1);
     ASSERT_EQ(gpu.size(), cpu.size());
     // Single precision: rarely a point lands on the other side of a voxel boundary and gets the
-    // neighboring voxel's site, a different but also valid approximation changing that point's
-    // squared distance by up to ~0.1 m^2 at 0.2 m resolution (0.09 observed). Otherwise the sums
-    // agree to rounding (mean 3e-4 m^2 over ~8000 m^2 sums observed).
-    const double max_error = (gpu - cpu).cwiseAbs().maxCoeff();
-    const double mean_error = (gpu - cpu).cwiseAbs().mean();
-    EXPECT_LT(max_error, 0.25) << "clip " << clip;
-    EXPECT_LT(mean_error, 2e-3) << "clip " << clip;
+    // neighboring voxel's site, a different but also valid approximation that changes that one
+    // clipped term by at most clip^2. Otherwise the sums agree to rounding.
+    // Observed at clip 1: 0.75 % of the particles affected, max 0.36 m^2, mean 4e-4 m^2.
+    const double clip_squared = std::pow(std::min(clip, field_->maxDistance()), 2);
+    const Eigen::ArrayXd error = (gpu - cpu).cwiseAbs().array();
+    const double affected = (error > 1e-3).cast<double>().mean();
+    EXPECT_LT(affected, 0.03) << "clip " << clip;
+    EXPECT_LT(error.mean(), 2e-3) << "clip " << clip;
+    EXPECT_LE(error.maxCoeff(), clip_squared) << "clip " << clip;
   }
 }
 
 TEST_F(CudaDistanceFieldMapTest, HandlesEmptyInputs)
 {
-  EXPECT_EQ(map_->sumClippedSquaredDistances(ParticleSet(), makePoints(), 1.0).size(), 0);
-  const Eigen::VectorXd sums = map_->sumClippedSquaredDistances(makeParticles(10), {}, 1.0);
+  EXPECT_EQ(map_->sumClippedSquaredDistances(ParticleSet(), makePoints(), 1.0, 1).size(), 0);
+  const Eigen::VectorXd sums =
+    map_->sumClippedSquaredDistances(test::makeRoomParticles(10), {}, 1.0, 1);
   ASSERT_EQ(sums.size(), 10);
   EXPECT_TRUE(sums.isZero());
 }
 
 TEST_F(CudaDistanceFieldMapTest, ConcurrentCallsAreSerialized)
 {
-  const ParticleSet particles = makeParticles(500);
+  const ParticleSet particles = test::makeRoomParticles(500);
   const std::vector<Eigen::Vector3d> points = makePoints();
-  const Eigen::VectorXd expected = map_->sumClippedSquaredDistances(particles, points, 1.0);
+  const Eigen::VectorXd expected = map_->sumClippedSquaredDistances(particles, points, 1.0, 1);
   std::vector<Eigen::VectorXd> results(4);
   std::vector<std::thread> threads;
   for (auto & result : results) {
     threads.emplace_back([&] {
       for (int i = 0; i < 20; ++i) {
-        result = map_->sumClippedSquaredDistances(particles, points, 1.0);
+        result = map_->sumClippedSquaredDistances(particles, points, 1.0, 1);
       }
     });
   }

@@ -4,8 +4,10 @@
 #include <random>
 #include <stdexcept>
 
+#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
+#include "amcl_3d_core/map/map_factory.hpp"
 #include "test_utils.hpp"
 
 namespace amcl_3d
@@ -110,42 +112,16 @@ namespace amcl_3d
 {
 namespace
 {
-/// Random particles around the room, with full 3D orientations.
-ParticleSet makeParticles(size_t particle_num)
-{
-  std::mt19937 rng(3);
-  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
-  ParticleSet particles(particle_num);
-  for (size_t i = 0; i < particle_num; ++i) {
-    Pose pose;
-    pose.position = Eigen::Vector3d(4.0 + 3.0 * uniform(rng), 2.5 + 2.0 * uniform(rng), 0.0);
-    pose.orientation =
-      Eigen::Quaterniond(1.0, 0.05 * uniform(rng), 0.05 * uniform(rng), uniform(rng)).normalized();
-    particles.setPose(i, pose);
-  }
-  return particles;
-}
-
-std::vector<Eigen::Vector3d> scanPoints(const PointCloud & scan)
-{
-  std::vector<Eigen::Vector3d> points;
-  for (const auto & p : scan) {
-    points.emplace_back(p.x, p.y, p.z);
-  }
-  return points;
-}
+constexpr size_t kThreadNum = 4;
 
 /// The batched query must equal the sum of single queries, whatever the backend does inside.
 void expectBatchMatchesSingleQueries(const PointCloudMap & map)
 {
-  const ParticleSet particles = makeParticles(300);
-  Pose sensor_pose;
-  sensor_pose.position = Eigen::Vector3d(3.0, 2.0, 0.0);
-  const std::vector<Eigen::Vector3d> points =
-    scanPoints(*test::makeScan(*test::makeRoomMap(), sensor_pose));
+  const ParticleSet particles = test::makeRoomParticles(300);
+  const std::vector<Eigen::Vector3d> points = test::makeRoomScanPoints();
   const double clip = 0.5;
 
-  const Eigen::VectorXd sums = map.sumClippedSquaredDistances(particles, points, clip);
+  const Eigen::VectorXd sums = map.sumClippedSquaredDistances(particles, points, clip, kThreadNum);
   ASSERT_EQ(sums.size(), static_cast<Eigen::Index>(particles.size()));
   for (size_t i = 0; i < particles.size(); ++i) {
     const Pose pose = particles.pose(i);
@@ -171,18 +147,60 @@ TEST(PointCloudMap, BatchedQueryMatchesSingleQueriesDistanceField)
 
 TEST(PointCloudMap, BatchedQueryDoesNotDependOnThreadNum)
 {
-  DistanceFieldMap map(*test::makeRoomMap(), {0.1, 1.0});
-  const ParticleSet particles = makeParticles(1000);
-  Pose sensor_pose;
-  sensor_pose.position = Eigen::Vector3d(3.0, 2.0, 0.0);
-  const std::vector<Eigen::Vector3d> points =
-    scanPoints(*test::makeScan(*test::makeRoomMap(), sensor_pose));
+  const DistanceFieldMap map(*test::makeRoomMap(), {0.1, 1.0});
+  const ParticleSet particles = test::makeRoomParticles(1000);
+  const std::vector<Eigen::Vector3d> points = test::makeRoomScanPoints();
 
-  map.setThreadNum(1);
-  const Eigen::VectorXd single = map.sumClippedSquaredDistances(particles, points, 1.0);
+  const Eigen::VectorXd single = map.sumClippedSquaredDistances(particles, points, 1.0, 1);
   for (const size_t thread_num : {3, 0}) {
-    map.setThreadNum(thread_num);
-    EXPECT_EQ(map.sumClippedSquaredDistances(particles, points, 1.0), single) << thread_num;
+    EXPECT_EQ(map.sumClippedSquaredDistances(particles, points, 1.0, thread_num), single)
+      << thread_num;
+  }
+}
+
+TEST(MapFactory, ParsesNames)
+{
+  EXPECT_EQ(toMapType("distance_field"), MapParams::Type::kDistanceField);
+  EXPECT_EQ(toMapType("kdtree"), MapParams::Type::kKdTree);
+  EXPECT_EQ(toMapDevice("cpu"), MapParams::Device::kCpu);
+  EXPECT_EQ(toMapDevice("cuda"), MapParams::Device::kCuda);
+  EXPECT_THROW(toMapType("octree"), std::invalid_argument);
+  EXPECT_THROW(toMapDevice("gpu"), std::invalid_argument);
+}
+
+TEST(MapFactory, BuildsTheRequestedMap)
+{
+  const PointCloud::Ptr cloud = test::makeRoomMap();
+  MapParams params;
+  params.resolution = 0.1;
+  const auto field = createPointCloudMap(cloud, params, 0.8);
+  ASSERT_NE(dynamic_cast<const DistanceFieldMap *>(field.get()), nullptr);
+  EXPECT_DOUBLE_EQ(field->maxDistance(), 0.8);
+  EXPECT_FALSE(field->description().empty());
+
+  params.type = MapParams::Type::kKdTree;
+  EXPECT_NE(
+    dynamic_cast<const KdTreeMap *>(createPointCloudMap(cloud, params, 0.8).get()), nullptr);
+  EXPECT_THROW(
+    createPointCloudMap(PointCloud::Ptr(new PointCloud), params, 0.8), std::invalid_argument);
+}
+
+TEST(MapFactory, RejectsInconsistentParameters)
+{
+  MapParams params;
+  params.resolution = 0.0;
+  EXPECT_THROW(validate(params), std::invalid_argument);
+
+  params = MapParams{};
+  params.type = MapParams::Type::kKdTree;
+  params.device = MapParams::Device::kCuda;
+  EXPECT_THROW(validate(params), std::invalid_argument);
+
+  params.type = MapParams::Type::kDistanceField;
+  if (CudaDistanceFieldMap::available()) {
+    EXPECT_NO_THROW(validate(params));
+  } else {
+    EXPECT_THROW(validate(params), std::invalid_argument);
   }
 }
 

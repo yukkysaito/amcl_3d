@@ -1,6 +1,7 @@
 #include "amcl_3d_core/map/cuda_distance_field_map.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <stdexcept>
 #include <utility>
 
@@ -57,8 +58,8 @@ CudaDistanceFieldMap::~CudaDistanceFieldMap() = default;
 bool CudaDistanceFieldMap::available() { return cuda::deviceCount() > 0; }
 
 Eigen::VectorXd CudaDistanceFieldMap::sumClippedSquaredDistances(
-  const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points,
-  double clip_distance) const
+  const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points, double clip_distance,
+  size_t /*thread_num*/) const
 {
   // DistanceFieldMap clips at its own max_distance, so a larger clip has no effect beyond it.
   const double clip = std::min(clip_distance, field_->maxDistance());
@@ -82,6 +83,14 @@ Eigen::VectorXd CudaDistanceFieldMap::sumClippedSquaredDistances(
   device_field_->sumClippedSquaredDistances(
     transforms, flat_points, static_cast<float>(clip * clip), sums);
   return Eigen::Map<const Eigen::VectorXd>(sums.data(), static_cast<Eigen::Index>(sums.size()));
+}
+
+std::string CudaDistanceFieldMap::description() const
+{
+  char text[64];
+  std::snprintf(
+    text, sizeof(text), " on the GPU (%.1f MB)", static_cast<double>(deviceMemoryBytes()) / 1e6);
+  return field_->description() + text;
 }
 
 size_t CudaDistanceFieldMap::deviceMemoryBytes() const { return device_field_->memoryBytes(); }
