@@ -1,4 +1,6 @@
 #pragma once
+#include <cstddef>
+#include <vector>
 #define EIGEN_MPL2_ONLY
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -58,12 +60,20 @@ struct KLDSamplingParam
     double z_bin_width;
 };
 
+struct LidarMeasurementParam
+{
+    size_t random_sample_num = 100; // number of scan points used per update
+    double max_dist = 1.0;          // [m] squared distance is clipped at max_dist^2
+    double sigma = 1.0;             // [m] std dev of the point-to-map distance
+};
+
 struct AmclParam
 {
     AugmentedMCLParam augmented_mcl;
     ResampleTimingParam resample_timing;
     KLDSamplingParam kld_sampling;
     InitialPoseParam init_pose;
+    LidarMeasurementParam lidar_measurement;
 };
 
 typedef std::vector<State> Particles;

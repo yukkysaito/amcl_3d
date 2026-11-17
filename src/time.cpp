@@ -1,35 +1,34 @@
 #include "amcl_3d/time.hpp"
+#include <chrono>
+#include <cmath>
 
 namespace amcl_3d
 {
-Time::Time(const ros::Time &ros_time)
+Time::Time() : sec(0u), nsec(0u) {}
+Time::Time(const unsigned int sec, const unsigned int nsec) : sec(sec), nsec(nsec) {}
+
+Time Time::fromSec(const double sec)
 {
-    sec = ros_time.sec;
-    nsec = ros_time.nsec;
+    const double floor_sec = std::floor(sec);
+    return Time((unsigned int)floor_sec, (unsigned int)((sec - floor_sec) * 1e9));
 }
-Time::Time()
+
+double Time::toSec() const
 {
+    return (double)sec + (double)nsec * 1e-9;
 }
-ros::Time Time::toROSTime()
-{
-    ros::Time time;
-    time.sec = sec;
-    time.nsec = nsec;
-    return time;
-}
-Time Time::fromROSTime(const ros::Time &ros_time)
-{
-    Time time;
-    time.sec = ros_time.sec;
-    time.nsec = ros_time.nsec;
-    return time;
-}
+
 double Time::getDiff(const Time &start, const Time &end)
 {
-    return ((double)end.sec + (double)end.nsec / 1000000000.0) - ((double)start.sec + (double)start.nsec / 1000000000.0);
+    // compute integer parts separately to keep nanosecond precision
+    return ((double)end.sec - (double)start.sec) + ((double)end.nsec - (double)start.nsec) * 1e-9;
 }
+
 Time Time::getTimeNow()
 {
-    return fromROSTime(ros::Time::now());
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    return Time((unsigned int)(ns / 1000000000LL), (unsigned int)(ns % 1000000000LL));
 }
 } // namespace amcl_3d

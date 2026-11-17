@@ -1,17 +1,16 @@
 #pragma once
 
-#include <ros/ros.h>
-
 namespace amcl_3d
 {
+// ROS-independent time stamp. Conversion from/to ros::Time lives in the ROS wrapper (node.cpp).
 struct Time
 {
-    Time(const ros::Time &ros_time);
     Time();
-    ros::Time toROSTime();
-    static Time fromROSTime(const ros::Time &ros_time);
+    Time(const unsigned int sec, const unsigned int nsec);
+    static Time fromSec(const double sec);
+    double toSec() const;
     static double getDiff(const Time &start, const Time &end);
-    static Time getTimeNow();
+    static Time getTimeNow(); // wall clock (std::chrono::system_clock)
     unsigned int sec;
     unsigned int nsec;
 };

@@ -36,33 +36,33 @@ bool Amcl::getParticles(std::shared_ptr<const Particles> &particles_ptr)
 
 bool Amcl::measureLidar(const Time &time, const pcl::PointCloud<pcl::PointXYZ>::Ptr measuement)
 {
-#if 0
-    if (kd_map_ptr_ == nullptr || measuement == nullptr)
+    (void)time; // particles are expected to be predicted up to `time` by the caller
+    if (!initialized_ || kd_map_ptr_ == nullptr || measuement == nullptr || measuement->empty())
         return false;
     MeasurementState measurement_state;
-    const size_t random_sample_num = 100;
-    const double max_dist = 1.0;
-    const double sigma = 1.0;
     std::shared_ptr<MeasurementModelInterface> model =
-        std::make_shared<LidarMeasurementModel>(kd_map_ptr_, measuement, random_sample_num, max_dist, sigma);
-    pf_ptr_->measure(model, time, measurement_state);
+        std::make_shared<LidarMeasurementModel>(kd_map_ptr_, measuement,
+                                                param_.lidar_measurement.random_sample_num,
+                                                param_.lidar_measurement.max_dist,
+                                                param_.lidar_measurement.sigma);
+    if (!pf_ptr_->measure(model, measurement_state))
+        return false;
 
-    checkResample(measurement_state);
-#endif
-    return true;
+    return checkResample(measurement_state);
 }
 
 bool Amcl::measureNdtPose(std::shared_ptr<const Particles> particles_ptr, const Position &position, const Quat &quat, const PoseCovariance &covariance)
 {
+    if (!initialized_)
+        return false;
     MeasurementState measurement_state;
     std::shared_ptr<MeasurementModelInterface> model =
         std::make_shared<NdtPoseMeasurementModel>(position, quat, covariance);
 
     if (!pf_ptr_->measure(particles_ptr, model, measurement_state))
         return false;
-        
-    checkResample(measurement_state);
-    return true;
+
+    return checkResample(measurement_state);
 }
 
 bool Amcl::checkResample(const MeasurementState &measurement_state)
@@ -73,12 +73,12 @@ bool Amcl::checkResample(const MeasurementState &measurement_state)
     param_.augmented_mcl.w_slow =
         param_.augmented_mcl.w_slow +
         param_.augmented_mcl.alpha_slow * (measurement_state.raw_weight_avg - param_.augmented_mcl.w_slow);
-    const double random_sampling_ratio = std::max(0.0, 1.0 - (param_.augmented_mcl.w_fast / param_.augmented_mcl.w_slow));
-    // std::cout << "measurement_state.raw_weight_avg: " << measurement_state.raw_weight_avg << std::endl;
-    // std::cout << "param_.augmented_mcl.w_fast: " << param_.augmented_mcl.w_fast << std::endl;
-    // std::cout << "param_.augmented_mcl.w_slow: " << param_.augmented_mcl.w_slow << std::endl;
-    // std::cout << " 1.0 - (param_.augmented_mcl.w_fast / param_.augmented_mcl.w_slow): " <<  1.0 - (param_.augmented_mcl.w_fast / param_.augmented_mcl.w_slow) << std::endl;
-    // std::cout << "random_sampling_ratio: " << random_sampling_ratio << std::endl;
+    // random_sampling_ratio is used by the augmented resample (currently disabled below)
+    const double random_sampling_ratio =
+        0.0 < param_.augmented_mcl.w_slow
+            ? std::max(0.0, 1.0 - (param_.augmented_mcl.w_fast / param_.augmented_mcl.w_slow))
+            : 0.0;
+    (void)random_sampling_ratio;
     pf_ptr_->normalizeWeight();
 
     double checked_ess_ratio_threshold = std::max(param_.resample_timing.ess_ratio_threshold, 1.0 / (double)pf_ptr_->getParticleNum());
@@ -107,6 +107,7 @@ bool Amcl::checkResample(const MeasurementState &measurement_state)
         // pf_ptr_->resample(pf_ptr_->getParticleNum(), random_sampling_ratio, noise_gens); // augmented resample
         // pf_ptr_->resample(param_.kld_sampling, random_sampling_ratio, noise_gens); // random resample and kld sample
     }
+    return true;
 }
 
 bool Amcl::predict(std::shared_ptr<PredictionModelInterface> model)
@@ -116,14 +117,16 @@ bool Amcl::predict(std::shared_ptr<PredictionModelInterface> model)
 
 bool Amcl::predict(std::shared_ptr<PredictionModelInterface> model, const Time &time)
 {
-    pf_ptr_->predict(model, time);
-    return true;
+    if (!initialized_)
+        return false;
+    return pf_ptr_->predict(model, time);
 }
 
 bool Amcl::predict(std::shared_ptr<Particles> particles_ptr, std::shared_ptr<PredictionModelInterface> model, const Time &time, const bool update_time)
 {
-    pf_ptr_->predict(particles_ptr, model, time, update_time);
-    return true;
+    if (!initialized_)
+        return false;
+    return pf_ptr_->predict(particles_ptr, model, time, update_time);
 }
 
 bool Amcl::setInitialPose(const Position &position, const Quat &quat, const PoseCovariance &covariance)
@@ -132,6 +135,12 @@ bool Amcl::setInitialPose(const Position &position, const Quat &quat, const Pose
 }
 
 bool Amcl::setInitialPose(const Position &position, const Quat &quat, const PoseCovariance &covariance, const size_t particle_num)
+{
+    return setInitialPose(position, quat, covariance, particle_num, Time::getTimeNow());
+}
+
+bool Amcl::setInitialPose(const Position &position, const Quat &quat, const PoseCovariance &covariance, const size_t particle_num,
+                          const Time &time)
 {
     std::shared_ptr<ResampleNoiseInterface> x_noise_ptr =
         std::make_shared<NormalDistribution>(/*avg*/ 0.0, /*var*/ covariance(0, 0));
@@ -147,7 +156,8 @@ bool Amcl::setInitialPose(const Position &position, const Quat &quat, const Pose
         std::make_shared<NormalDistribution>(/*avg*/ 0.0, /*var*/ covariance(5, 5));
     ParticleFilter::NoiseGenerators
         noise_gens(x_noise_ptr, y_noise_ptr, z_noise_ptr, roll_noise_ptr, pitch_noise_ptr, yaw_noise_ptr);
-    return pf_ptr_->init(position, quat, noise_gens, particle_num);
+    initialized_ = pf_ptr_->init(position, quat, noise_gens, particle_num, time);
+    return initialized_;
 }
 
 State Amcl::getMMSE()

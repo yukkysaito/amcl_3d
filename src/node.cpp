@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -93,6 +94,11 @@ Amcl3dNode::Amcl3dNode() : nh_(""), pnh_("~"), tf_listener_(tf_buffer_)
     pnh_.param<double>("amcl_param/kld_sampling/x_bin_width", amcl_param.kld_sampling.x_bin_width, double(0.2));
     pnh_.param<double>("amcl_param/kld_sampling/y_bin_width", amcl_param.kld_sampling.y_bin_width, double(0.2));
     pnh_.param<double>("amcl_param/kld_sampling/z_bin_width", amcl_param.kld_sampling.z_bin_width, double(0.2));
+    int random_sample_num;
+    pnh_.param<int>("amcl_param/lidar_measurement/random_sample_num", random_sample_num, int(100));
+    amcl_param.lidar_measurement.random_sample_num = (size_t)(std::max(random_sample_num, 1));
+    pnh_.param<double>("amcl_param/lidar_measurement/max_dist", amcl_param.lidar_measurement.max_dist, double(1.0));
+    pnh_.param<double>("amcl_param/lidar_measurement/sigma", amcl_param.lidar_measurement.sigma, double(1.0));
     amcl_ = std::make_shared<Amcl>(amcl_param);
     prediction_model_node_ = std::make_shared<FooPredictionModelNode>(amcl_);
   }
@@ -148,7 +154,7 @@ void Amcl3dNode::mapCallback(const sensor_msgs::PointCloud2::ConstPtr &input_map
 //   std::shared_ptr<Particles> copied_particles_ptr(new Particles(*particles_ptr)); // for time back
 //   amcl_->predict(copied_particles_ptr,
 //                  prediction_model_node_->getPredictionModel(),
-//                  Time::fromROSTime(input_ndt_pose_msg->header.stamp),
+//                  toTime(input_ndt_pose_msg->header.stamp),
 //                  false);
 
 //   // transform map data to world frame id coordinate
@@ -247,15 +253,16 @@ void Amcl3dNode::initialPoseCallback(const geometry_msgs::PoseWithCovarianceStam
     covariance(/*yaw*/ 5, /*yaw*/ 5) = 0.1;     // yaw var
   }
   // set initial pose
-  if (!amcl_->setInitialPose(position, quat, covariance))
+  if (!amcl_->setInitialPose(position, quat, covariance, amcl_->getParam().init_pose.initial_particle_num,
+                             toTime(ros::Time::now())))
     ROS_ERROR("Failed set initial pose");
 }
 
 void Amcl3dNode::pc2Callback(const sensor_msgs::PointCloud2::ConstPtr &input_pc2_msg)
 {
-  ROS_INFO("get PointCloud callback"); // DEBUG
+  ROS_DEBUG("get PointCloud callback");
 
-  amcl_->predict(prediction_model_node_->getPredictionModel());
+  amcl_->predict(prediction_model_node_->getPredictionModel(), toTimeOrNow(input_pc2_msg->header.stamp));
   sensor_msgs::PointCloud2::ConstPtr ros_pc2 = input_pc2_msg;
   // transform sensor data to base link frame id coordinate
   if (ros_pc2->header.frame_id != base_link_frame_id_)
@@ -279,14 +286,16 @@ void Amcl3dNode::pc2Callback(const sensor_msgs::PointCloud2::ConstPtr &input_pc2
   pcl::PointCloud<pcl::PointXYZ>::Ptr pc_measuement(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::fromROSMsg(*ros_pc2, *pc_measuement);
   // calculate likelihood and resample particle
-  amcl_->measureLidar(ros_pc2->header.stamp, pc_measuement);
+  amcl_->measureLidar(toTimeOrNow(ros_pc2->header.stamp), pc_measuement);
 }
 
 void Amcl3dNode::publishTimerCallback(const ros::TimerEvent &e)
 {
   // particles
   const ros::Time current_time = ros::Time::now();
-  amcl_->predict(prediction_model_node_->getPredictionModel());
+  if (!amcl_->isInitialized())
+    return;
+  amcl_->predict(prediction_model_node_->getPredictionModel(), toTime(current_time));
   geometry_msgs::PoseArray output_particle_msg;
 
   output_particle_msg.header.stamp = current_time;

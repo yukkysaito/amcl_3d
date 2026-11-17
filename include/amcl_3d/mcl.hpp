@@ -33,6 +33,9 @@ public:
                const bool update_time = true);
   bool setInitialPose(const Position &position, const Quat &quat, const PoseCovariance &covariance);
   bool setInitialPose(const Position &position, const Quat &quat, const PoseCovariance &covariance, const size_t particle_num);
+  bool setInitialPose(const Position &position, const Quat &quat, const PoseCovariance &covariance, const size_t particle_num,
+                      const Time &time);
+  bool isInitialized() const { return initialized_; }
   State getMMSE();
   State getMAP();
 
@@ -42,5 +45,6 @@ private:
   pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr kd_map_ptr_;
   std::shared_ptr<ParticleFilter> pf_ptr_;
   AmclParam param_;
+  bool initialized_ = false;
 };
 } // namespace amcl_3d
