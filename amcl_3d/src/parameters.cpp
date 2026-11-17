@@ -132,6 +132,7 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
     node, "thread_num", defaults.point_cloud_measurement.thread_num,
     "CPU threads of the filter (0: all hardware threads, often slower)");
   p.point_cloud_measurement.thread_num = thread_num;
+  p.motion_model.thread_num = thread_num;
 
   auto & motion = p.motion_model;
   motion.linear_noise_scale = declare<double>(

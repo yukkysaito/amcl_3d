@@ -163,6 +163,7 @@ int main(int argc, char ** argv)
     config.resampler == "kld" ? ResamplerType::kKld : ResamplerType::kSystematic;
   params.expansion_reset.enabled = config.expansion_reset;
   params.point_cloud_measurement.thread_num = config.threads;
+  params.motion_model.thread_num = config.threads;
   Localizer localizer(params);
   MapParams map_params;
   map_params.type = toMapType(config.map_type);

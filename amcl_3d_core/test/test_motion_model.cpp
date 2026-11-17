@@ -90,4 +90,41 @@ TEST(TwistMotionModel, BackwardPredictionIsDeterministic)
   }
 }
 
+TEST(TwistMotionModel, ResultDoesNotDependOnThreadNum)
+{
+  const Twist twist = makeTwist({2.0, 0.3, 0.0}, {0.0, 0.05, 0.4});
+  auto predict_with = [&](size_t thread_num) {
+    TwistMotionModel::Params params;
+    params.thread_num = thread_num;
+    RandomGenerator rng(9);
+    ParticleSet particles(1000);
+    TwistMotionModel(params).predict(twist, 0.1, particles, rng);
+    return particles;
+  };
+  const ParticleSet single = predict_with(1);
+  for (const size_t thread_num : {3, 0}) {
+    const ParticleSet parallel = predict_with(thread_num);
+    EXPECT_EQ(parallel.positions(), single.positions()) << thread_num;
+    EXPECT_EQ(parallel.orientations(), single.orientations()) << thread_num;
+  }
+}
+
+TEST(TwistMotionModel, ParticlesGetIndependentNoise)
+{
+  const TwistMotionModel model;
+  RandomGenerator rng(10);
+  ParticleSet particles(4000);
+  model.predict(makeTwist({1.0, 0.0, 0.0}, {0.0, 0.0, 0.0}), 1.0, particles, rng);
+  // neighboring particles must not share their noise (no correlation between streams)
+  const Eigen::ArrayXd x = particles.positions().col(0).array() - 1.0;
+  const Eigen::ArrayXd a = x.head(x.size() - 1);
+  const Eigen::ArrayXd b = x.tail(x.size() - 1);
+  const double correlation =
+    ((a - a.mean()) * (b - b.mean())).mean() /
+    std::sqrt((a - a.mean()).square().mean() * (b - b.mean()).square().mean());
+  EXPECT_LT(std::abs(correlation), 0.05);
+  // and the noise level is as configured: std of x = (0.1 * |v| + 0.1) * sqrt(dt)
+  EXPECT_NEAR(std::sqrt(x.square().mean()), 0.2, 0.01);
+}
+
 }  // namespace amcl_3d
