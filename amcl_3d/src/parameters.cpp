@@ -89,6 +89,9 @@ NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & locali
 
   p.map_type = toMapType(declare<std::string>(
     node, "map.type", "distance_field", "'distance_field' (fast) or 'kdtree' (exact, slow)"));
+  p.map_thread_num = declareCount(
+    node, "map.thread_num", 4,
+    "CPU threads of the likelihood evaluation (0: all hardware threads, often slower)");
   p.distance_field.resolution =
     declare<double>(node, "map.resolution", 0.2, "Voxel size of the distance field [m]");
   p.distance_field.max_distance = localizer_params.point_cloud_measurement.max_distance;

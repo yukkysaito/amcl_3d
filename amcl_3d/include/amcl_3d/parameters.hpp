@@ -35,6 +35,8 @@ struct NodeParams
     kDistanceField
   };
   MapType map_type;
+  /// CPU threads of the likelihood evaluation (0: all hardware threads).
+  size_t map_thread_num;
   /// max_distance is taken from point_cloud_measurement.max_distance.
   DistanceFieldMap::Params distance_field;
 

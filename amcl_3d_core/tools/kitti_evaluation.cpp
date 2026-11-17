@@ -14,8 +14,8 @@
 // - The filter is initialized off the ground truth by `init_offset` [m] and `init_yaw_offset`.
 //
 // Options (defaults in Config): map=kdtree|distance_field resolution=<m> resampler=systematic|kld
-// particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n> frames=<n>
-// output=<trajectory.csv>
+// threads=<n> particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n>
+// frames=<n> output=<trajectory.csv>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -48,6 +48,7 @@ struct Config
 {
   std::string map_type = "kdtree";
   double map_resolution = 0.2;
+  size_t threads = 4;  // likelihood threads, 0: all
   std::string resampler = "systematic";
   size_t particles = 500;
   size_t sample = 200;
@@ -89,6 +90,7 @@ Config parseConfig(int argc, char ** argv)
   };
   take("map", c.map_type);
   take("resolution", c.map_resolution);
+  take("threads", c.threads);
   take("resampler", c.resampler);
   take("particles", c.particles);
   take("sample", c.sample);
@@ -278,15 +280,18 @@ int main(int argc, char ** argv)
   params.expansion_reset.enabled = config.expansion_reset;
   Localizer localizer(params);
   double map_megabytes = 0.0;  // distance field only
+  std::shared_ptr<PointCloudMap> point_cloud_map;
   if (config.map_type == "distance_field") {
     const auto field = std::make_shared<DistanceFieldMap>(
       *map,
       DistanceFieldMap::Params{config.map_resolution, params.point_cloud_measurement.max_distance});
     map_megabytes = static_cast<double>(field->memoryBytes()) / 1e6;
-    localizer.setMap(field);
+    point_cloud_map = field;
   } else {
-    localizer.setMap(std::make_shared<KdTreeMap>(map));
+    point_cloud_map = std::make_shared<KdTreeMap>(map);
   }
+  point_cloud_map->setThreadNum(config.threads);
+  localizer.setMap(point_cloud_map);
   if (config.scan_matching) {
     localizer.setScanMatcher(std::make_unique<NdtScanMatcher>(map, NdtScanMatcher::Params{}));
   }
@@ -368,9 +373,9 @@ int main(int argc, char ** argv)
     filter_errors.translation.begin(), filter_errors.translation.end(),
     [](double e) { return e > 1.0; }));
   std::printf(
-    "map=%s res=%.2f resampler=%s particles=%zu sample=%zu ndt=%d reset=%d seed=%lu\n",
-    config.map_type.c_str(), config.map_resolution, config.resampler.c_str(), config.particles,
-    config.sample, config.scan_matching, config.expansion_reset,
+    "map=%s res=%.2f threads=%zu resampler=%s particles=%zu sample=%zu ndt=%d reset=%d seed=%lu\n",
+    config.map_type.c_str(), config.map_resolution, config.threads, config.resampler.c_str(),
+    config.particles, config.sample, config.scan_matching, config.expansion_reset,
     static_cast<unsigned long>(config.seed));
   std::printf(
     "  map: %zu points, built in %.1f s, distance field %.0f MB\n", map->size(), map_seconds,

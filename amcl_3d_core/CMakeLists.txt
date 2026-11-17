@@ -22,6 +22,7 @@ add_library(${PROJECT_NAME} SHARED
   src/localizer.cpp
   src/map/distance_field_map.cpp
   src/map/kdtree_map.cpp
+  src/map/point_cloud_map.cpp
   src/math.cpp
   src/measurement_model/point_cloud_measurement_model.cpp
   src/measurement_model/pose_measurement_model.cpp

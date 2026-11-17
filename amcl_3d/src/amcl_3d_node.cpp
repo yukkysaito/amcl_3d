@@ -89,15 +89,18 @@ std::optional<Eigen::Isometry3d> Amcl3dNode::lookupTransform(
 void Amcl3dNode::setMap(const PointCloud::Ptr & map)
 {
   try {
+    std::shared_ptr<PointCloudMap> point_cloud_map;
     if (params_.map_type == NodeParams::MapType::kDistanceField) {
       const auto field = std::make_shared<DistanceFieldMap>(*map, params_.distance_field);
       RCLCPP_INFO(
         get_logger(), "distance field: %zu blocks, %.1f MB", field->blockNum(),
         static_cast<double>(field->memoryBytes()) / 1e6);
-      localizer_->setMap(field);
+      point_cloud_map = field;
     } else {
-      localizer_->setMap(std::make_shared<KdTreeMap>(map));
+      point_cloud_map = std::make_shared<KdTreeMap>(map);
     }
+    point_cloud_map->setThreadNum(params_.map_thread_num);
+    localizer_->setMap(point_cloud_map);
     global_sampler_ =
       std::make_unique<GroundPoseSampler>(*map, params_.global_localization.sampler);
     if (params_.scan_matching.enabled) {

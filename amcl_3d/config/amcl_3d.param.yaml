@@ -8,11 +8,14 @@
     # map: load a PCD file at startup, or leave empty to subscribe to the "map" topic
     map_pcd_file: ""
     map:
-      # distance_field: precomputed nearest map points, ~17x faster updates than kdtree with the
+      # distance_field: precomputed nearest map points, ~12x faster updates than kdtree with the
       #   same accuracy on KITTI 07 (see README); memory ~0.3 MB per meter of route at 0.2 m
-      # kdtree: exact nearest neighbor search, slow (~80 ms per update with the defaults)
+      # kdtree: exact nearest neighbor search, slow (~24 ms per update with the defaults)
       type: distance_field
       resolution: 0.2  # [m] distance_field voxel size
+      # CPU threads of the likelihood evaluation; 0 uses every hardware thread, which was slower
+      # than 4-16 threads on a 32 thread CPU (idle OpenMP threads spin on the shared cores)
+      thread_num: 4
 
     use_imu: false  # take the angular velocity from the "imu" topic instead of the odometry
 
