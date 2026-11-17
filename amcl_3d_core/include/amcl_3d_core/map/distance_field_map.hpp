@@ -35,6 +35,7 @@ public:
 
   double squaredDistanceToNearest(const Eigen::Vector3d & point) const override;
   double maxDistance() const override { return params_.max_distance; }
+  std::string description() const override;
 
   size_t blockNum() const { return block_index_.size(); }
   size_t memoryBytes() const { return site_offsets_.size() * sizeof(int8_t); }

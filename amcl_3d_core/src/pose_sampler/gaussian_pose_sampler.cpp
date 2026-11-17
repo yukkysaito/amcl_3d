@@ -1,4 +1,4 @@
-#include "amcl_3d_core/gaussian_pose_sampler.hpp"
+#include "amcl_3d_core/pose_sampler/gaussian_pose_sampler.hpp"
 
 #include <Eigen/Eigenvalues>
 #include <random>

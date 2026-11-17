@@ -2,8 +2,8 @@
 
 #include <functional>
 
-#include "amcl_3d_core/gaussian_pose_sampler.hpp"
 #include "amcl_3d_core/particle_filter.hpp"
+#include "amcl_3d_core/pose_sampler/gaussian_pose_sampler.hpp"
 #include "amcl_3d_core/resampler/systematic_resampler.hpp"
 #include "test_utils.hpp"
 

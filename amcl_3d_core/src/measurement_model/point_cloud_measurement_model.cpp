@@ -27,8 +27,8 @@ LogLikelihood PointCloudMeasurementModel::computeLogLikelihood(const ParticleSet
   const double inv_two_sigma2 = 1.0 / (2.0 * params_.sigma * params_.sigma);
   LogLikelihood result;
   result.observation_num = points_.size();
-  result.values =
-    -inv_two_sigma2 * map_->sumClippedSquaredDistances(particles, points_, params_.max_distance);
+  result.values = -inv_two_sigma2 * map_->sumClippedSquaredDistances(
+                                      particles, points_, params_.max_distance, params_.thread_num);
   return result;
 }
 

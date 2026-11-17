@@ -3,10 +3,10 @@
 #include <memory>
 #include <stdexcept>
 
-#include "amcl_3d_core/ground_pose_sampler.hpp"
 #include "amcl_3d_core/localizer.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
+#include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "test_utils.hpp"
 

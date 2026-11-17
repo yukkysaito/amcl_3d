@@ -17,8 +17,8 @@
 #include <string>
 
 #include "amcl_3d/parameters.hpp"
-#include "amcl_3d_core/ground_pose_sampler.hpp"
 #include "amcl_3d_core/localizer.hpp"
+#include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 
 namespace amcl_3d
 {

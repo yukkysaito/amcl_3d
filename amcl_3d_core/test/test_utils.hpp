@@ -2,7 +2,11 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
+#include <random>
+#include <vector>
 
+#include "amcl_3d_core/particle_set.hpp"
 #include "amcl_3d_core/types.hpp"
 
 namespace amcl_3d::test
@@ -68,6 +72,40 @@ inline PointCloud::Ptr makeScan(const PointCloud & map, const Pose & pose)
       static_cast<float>(local.x()), static_cast<float>(local.y()), static_cast<float>(local.z())));
   }
   return scan;
+}
+
+inline std::vector<Eigen::Vector3d> toPoints(const PointCloud & cloud)
+{
+  std::vector<Eigen::Vector3d> points;
+  points.reserve(cloud.size());
+  for (const auto & p : cloud) {
+    points.emplace_back(p.x, p.y, p.z);
+  }
+  return points;
+}
+
+/// Scan points of the room seen from (3, 2, 0), in the base frame.
+inline std::vector<Eigen::Vector3d> makeRoomScanPoints()
+{
+  Pose sensor_pose;
+  sensor_pose.position = Eigen::Vector3d(3.0, 2.0, 0.0);
+  return toPoints(*makeScan(*makeRoomMap(), sensor_pose));
+}
+
+/// Particles spread over the room with small roll / pitch and any yaw, uniform weights.
+inline ParticleSet makeRoomParticles(size_t particle_num, uint32_t seed = 3)
+{
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  ParticleSet particles(particle_num);
+  for (size_t i = 0; i < particle_num; ++i) {
+    Pose pose;
+    pose.position = Eigen::Vector3d(4.0 + 3.5 * uniform(rng), 2.5 + 2.5 * uniform(rng), 0.0);
+    pose.orientation =
+      Eigen::Quaterniond(1.0, 0.1 * uniform(rng), 0.1 * uniform(rng), uniform(rng)).normalized();
+    particles.setPose(i, pose);
+  }
+  return particles;
 }
 
 }  // namespace amcl_3d::test

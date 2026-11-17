@@ -31,12 +31,13 @@ endif()
 
 # The library itself is plain C++ (Eigen + PCL); ROS is not required.
 add_library(${PROJECT_NAME} SHARED
-  src/gaussian_pose_sampler.cpp
-  src/ground_pose_sampler.cpp
+  src/pose_sampler/gaussian_pose_sampler.cpp
+  src/pose_sampler/ground_pose_sampler.cpp
   src/localizer.cpp
   src/map/cuda_distance_field_map.cpp
   src/map/distance_field_map.cpp
   src/map/kdtree_map.cpp
+  src/map/map_factory.cpp
   src/map/point_cloud_map.cpp
   src/math.cpp
   src/measurement_model/point_cloud_measurement_model.cpp
@@ -77,8 +78,9 @@ endif()
 # Evaluation on public datasets (no extra dependency)
 option(AMCL3D_BUILD_TOOLS "Build evaluation tools" ON)
 if(AMCL3D_BUILD_TOOLS)
+  add_executable(kitti_evaluation tools/kitti_evaluation.cpp tools/kitti_dataset.cpp)
+  add_executable(likelihood_benchmark tools/likelihood_benchmark.cpp)
   foreach(tool kitti_evaluation likelihood_benchmark)
-    add_executable(${tool} tools/${tool}.cpp)
     target_link_libraries(${tool} ${PROJECT_NAME})
   endforeach()
 endif()

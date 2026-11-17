@@ -10,9 +10,6 @@
 #include <vector>
 
 #include "amcl_3d/conversions.hpp"
-#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
-#include "amcl_3d_core/map/distance_field_map.hpp"
-#include "amcl_3d_core/map/kdtree_map.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 
 namespace amcl_3d
@@ -34,7 +31,7 @@ PointCloud::Ptr toPointCloud(const sensor_msgs::msg::PointCloud2 & msg)
 Amcl3dNode::Amcl3dNode(const rclcpp::NodeOptions & options)
 : Node("amcl_3d", options),
   localizer_params_(declareLocalizerParams(*this)),
-  params_(declareNodeParams(*this, localizer_params_)),
+  params_(declareNodeParams(*this)),
   localizer_(std::make_unique<Localizer>(localizer_params_)),
   tf_buffer_(get_clock()),
   tf_listener_(tf_buffer_),
@@ -90,24 +87,9 @@ std::optional<Eigen::Isometry3d> Amcl3dNode::lookupTransform(
 void Amcl3dNode::setMap(const PointCloud::Ptr & map)
 {
   try {
-    std::shared_ptr<PointCloudMap> point_cloud_map;
-    if (params_.map_type == NodeParams::MapType::kDistanceField) {
-      const auto field = std::make_shared<DistanceFieldMap>(*map, params_.distance_field);
-      RCLCPP_INFO(
-        get_logger(), "distance field: %zu blocks, %.1f MB", field->blockNum(),
-        static_cast<double>(field->memoryBytes()) / 1e6);
-      point_cloud_map = field;
-      if (params_.map_use_cuda) {
-        const auto cuda_field = std::make_shared<CudaDistanceFieldMap>(field);
-        RCLCPP_INFO(
-          get_logger(), "distance field uploaded to the GPU: %.1f MB",
-          static_cast<double>(cuda_field->deviceMemoryBytes()) / 1e6);
-        point_cloud_map = cuda_field;
-      }
-    } else {
-      point_cloud_map = std::make_shared<KdTreeMap>(map);
-    }
-    point_cloud_map->setThreadNum(params_.map_thread_num);
+    const auto point_cloud_map =
+      createPointCloudMap(map, params_.map, localizer_params_.point_cloud_measurement.max_distance);
+    RCLCPP_INFO(get_logger(), "%s", point_cloud_map->description().c_str());
     localizer_->setMap(point_cloud_map);
     global_sampler_ =
       std::make_unique<GroundPoseSampler>(*map, params_.global_localization.sampler);
