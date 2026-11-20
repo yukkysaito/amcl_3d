@@ -131,7 +131,12 @@ void Amcl3dNode::onInitialPose(
   }
   const rclcpp::Time stamp =
     rclcpp::Time(msg->header.stamp).nanoseconds() == 0 ? now() : rclcpp::Time(msg->header.stamp);
-  localizer_->initialize(initial_pose, Time{stamp.nanoseconds()});
+  try {
+    localizer_->initialize(initial_pose, Time{stamp.nanoseconds()});
+  } catch (const std::invalid_argument & e) {
+    RCLCPP_ERROR(get_logger(), "initial pose rejected: %s", e.what());
+    return;
+  }
   reported_expansion_resets_ = 0;
 
   const Pose & pose = initial_pose.pose;
@@ -170,10 +175,10 @@ void Amcl3dNode::onGlobalLocalization(
 
 void Amcl3dNode::addTwist(const Twist & twist, const builtin_interfaces::msg::Time & stamp)
 {
-  if (!localizer_->addTwist(twist, fromMsg(stamp))) {
+  const LocalizerStatus status = localizer_->addTwist(twist, fromMsg(stamp));
+  if (status != LocalizerStatus::kOk) {
     RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), kThrottleMs,
-      "twist older than max_measurement_delay, applied from the oldest kept state on");
+      get_logger(), *get_clock(), kThrottleMs, "twist skipped: %s", toString(status));
   }
 }
 
