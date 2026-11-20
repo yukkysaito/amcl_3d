@@ -176,6 +176,7 @@ public:
   bool hasPointCloudLikelihood() const { return point_cloud_likelihood_ != nullptr; }
 
   /// (Re)starts the filter at `stamp`; clears the measurement history.
+  /// Throws std::invalid_argument if the pose or covariance is not finite.
   void initialize(const PoseWithCovariance & initial_pose, const Time & stamp);
   /// Initializes from an arbitrary distribution, e.g. GroundPoseSampler for global localization.
   /// Prefer KLD resampling then, so that the particle count shrinks after convergence.
@@ -183,9 +184,13 @@ public:
   bool isInitialized() const { return initialized_; }
 
   /// Registers a body twist valid from `stamp` until the next one, in any order. A twist older
-  /// than the newest measurement replays the measurements after it. Returns false if it is older
-  /// than the history: it is then applied from the oldest kept state on only.
-  bool addTwist(const Twist & twist, const Time & stamp);
+  /// than the newest measurement replays the measurements after it. A twist older than the
+  /// history still applies from the oldest kept state on, until the next twist.
+  /// Returns kStaleStamp if a newer twist already starts before the oldest kept state (the twist
+  /// would never be used) and kInvalidMeasurement if it is not finite; both leave the filter
+  /// untouched. Without measurements the filter predicts on its own every few seconds, so that the
+  /// buffered twists stay bounded.
+  LocalizerStatus addTwist(const Twist & twist, const Time & stamp);
 
   /// Moves the particles forward to `stamp` with the buffered twists (a measurement without
   /// correction, kept in the history like the others).
@@ -220,9 +225,10 @@ public:
   size_t expansionResetCount() const { return current().expansion_reset_count; }
   /// Time the particles currently represent (the newest measurement).
   const Time & stamp() const { return current().stamp; }
-  /// Measurements kept for delayed ones, measurements processed again so far, and delayed
-  /// measurements fused by reweighting so far (diagnostics).
+  /// Measurements kept for delayed ones, buffered twists, measurements processed again so far,
+  /// and delayed measurements fused by reweighting so far (diagnostics).
   size_t historySize() const { return history_.size(); }
+  size_t bufferedTwistCount() const { return twists_.size(); }
   size_t replayedCount() const { return replayed_count_; }
   size_t reweightedCount() const { return reweighted_count_; }
 

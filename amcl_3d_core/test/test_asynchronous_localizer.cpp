@@ -341,8 +341,9 @@ TEST(AsynchronousLocalizer, LateTwistReplaysTheIntervalItCovers)
     const double t = 0.1 * k;
     events.push_back({t, t, [](Localizer & l, const Time & s) { l.predict(s); }});
   }
-  events.push_back(
-    {0.25, 0.95, [](Localizer & l, const Time & s) { EXPECT_TRUE(l.addTwist(twistAt(0.0), s)); }});
+  events.push_back({0.25, 0.95, [](Localizer & l, const Time & s) {
+                      EXPECT_EQ(l.addTwist(twistAt(0.0), s), LocalizerStatus::kOk);
+                    }});
   const Localizer in_order = run(params, events, [](const Event & e) { return e.stamp; });
   const Localizer late = run(params, events, [](const Event & e) { return e.arrival; });
   // the twist (2 m/s from 0.25 s) moved the vehicle about 1.5 m
@@ -366,7 +367,10 @@ TEST(AsynchronousLocalizer, BoundsTheHistoryAndRejectsOlderInputs)
   EXPECT_EQ(localizer.particles().positions(), before.positions());
   EXPECT_EQ(localizer.predict(seconds(2.65)), LocalizerStatus::kOk);  // delayed, within 0.5 s
   EXPECT_EQ(localizer.stamp(), seconds(3.0));
-  EXPECT_FALSE(localizer.addTwist(twistAt(0.0), seconds(1.0)));  // too old to replay
+  // before the history, but the twist at its start: applies from there on
+  EXPECT_EQ(localizer.addTwist(twistAt(0.0), seconds(2.0)), LocalizerStatus::kOk);
+  // superseded by the twist at 2 s before the history starts: never used
+  EXPECT_EQ(localizer.addTwist(twistAt(0.0), seconds(1.0)), LocalizerStatus::kStaleStamp);
 
   params.max_measurement_delay = 0.0;  // no history: only time order
   Localizer strict(params);
