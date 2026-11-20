@@ -244,6 +244,26 @@ TEST_F(Amcl3dNodeTest, LocalizesFromScansAndPublishesTf)
   EXPECT_LT((map_from_odom.translation() - fromMsg(last_pose_->pose.pose).position).norm(), 1e-6);
 }
 
+TEST_F(Amcl3dNodeTest, FusesDelayedScansAndPublishesTheNewestEstimate)
+{
+  start({});
+  publishInitialPose();
+  const rclcpp::Time start = io_->now();
+  rclcpp::Time newest = start;
+  for (int i = 0; i < 30; ++i) {
+    // swap every other pair: the scan of 0.2 s arrives after the one of 0.3 s, and so on
+    const int slot = i % 4 == 1 ? i + 1 : (i % 4 == 2 ? i - 1 : i);
+    const rclcpp::Time stamp = start + rclcpp::Duration::from_seconds(0.1 * (slot + 1));
+    newest = std::max(newest, stamp);
+    const int expected_count = pose_count_ + 1;
+    points_pub_->publish(toMsg(scan_, "lidar", stamp));
+    ASSERT_TRUE(spinUntil([&] { return pose_count_ >= expected_count; }, 2s)) << "scan " << i;
+    EXPECT_EQ(rclcpp::Time(last_pose_->header.stamp), newest) << "scan " << i;
+  }
+  EXPECT_LT(positionError(), 0.1);
+  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
+}
+
 TEST_F(Amcl3dNodeTest, GlobalLocalizationService)
 {
   start({
@@ -261,7 +281,9 @@ TEST_F(Amcl3dNodeTest, GlobalLocalizationService)
   const auto response = future.get();
   ASSERT_TRUE(response->success) << response->message;
 
-  publishScans(40);
+  // the same static scan over and over: the tempered likelihood (scan_max_effective_points) needs
+  // about 100 of them to settle from the whole map
+  publishScans(100);
   // the distance field trades ~1-2 cm of accuracy for speed (see DistanceFieldMap)
   EXPECT_LT(positionError(), 0.1);
   EXPECT_LT(orientationError(), 1.5 * M_PI / 180.0);
@@ -269,7 +291,10 @@ TEST_F(Amcl3dNodeTest, GlobalLocalizationService)
 
 TEST_F(Amcl3dNodeTest, ScanMatchingRefinesPublishedPose)
 {
-  start({{"scan_matching.enabled", true}});
+  // The synthetic scans are noise free, so the untempered likelihood is the right model here; with
+  // tempering the particle estimate wanders by a few cm at standstill, and NDT then may settle in
+  // a local minimum of the grid aligned map. This test is about the refinement.
+  start({{"scan_matching.enabled", true}, {"scan_max_effective_points", 0}});
   publishInitialPose();
   publishScans(20);
   // tighter than the particle filter alone (0.1 m, 1 deg in LocalizesFromScansAndPublishesTf)
@@ -281,7 +306,7 @@ TEST_F(Amcl3dNodeTest, LocalizesWithNdtLikelihood)
 {
   start({{"point_cloud_likelihood.type", "ndt"}});
   publishInitialPose();
-  publishScans(30);
+  publishScans(60);  // the coarse voxel distributions settle more slowly on a repeated scan
   EXPECT_LT(positionError(), 0.1);
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
@@ -290,7 +315,7 @@ TEST_F(Amcl3dNodeTest, LocalizesWithGicpLikelihood)
 {
   start({{"point_cloud_likelihood.type", "gicp"}});
   publishInitialPose();
-  publishScans(30);
+  publishScans(60);  // the coarse voxel distributions settle more slowly on a repeated scan
   EXPECT_LT(positionError(), 0.1);
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }

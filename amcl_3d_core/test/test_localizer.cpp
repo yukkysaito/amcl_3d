@@ -70,7 +70,7 @@ TEST(Localizer, RejectsOutOfOrderInputs)
   localizer.initialize(PoseWithCovariance{}, seconds(5.0));
   EXPECT_EQ(localizer.predict(seconds(4.0)), LocalizerStatus::kStaleStamp);
   EXPECT_TRUE(localizer.addTwist(forward(1.0), seconds(6.0)));
-  EXPECT_FALSE(localizer.addTwist(forward(1.0), seconds(5.5)));
+  EXPECT_FALSE(localizer.addTwist(forward(1.0), seconds(4.5)));  // older than the history
 
   localizer.setPointCloudLikelihood(std::make_shared<LikelihoodField>(
     std::make_shared<KdTreeMap>(test::makeRoomMap()), LikelihoodField::Params{}));
@@ -262,18 +262,18 @@ TEST_F(RoomLocalizationTest, ExpansionResetRecoversFromWrongInitialPose)
     Localizer without_reset(params_);
     without_reset.setPointCloudLikelihood(likelihood);
     without_reset.initialize(initialGuess(1.2, tight), seconds(0.0));
-    runUpdates(without_reset, 50);
+    runUpdates(without_reset, 100);
     EXPECT_GT(positionError(without_reset), 0.3);
   }
   params_.expansion_reset.enabled = true;
   Localizer with_reset(params_);
   with_reset.setPointCloudLikelihood(likelihood);
-  with_reset.initialize(initialGuess(1.2, tight), seconds(0.0));
-  runUpdates(with_reset, 50);
+  with_reset.initialize(initialGuess(1.2, tight), seconds(time_));
+  runUpdates(with_reset, 100);
   EXPECT_GT(with_reset.expansionResetCount(), 0u);
   EXPECT_LT(positionError(with_reset), 0.1);
   EXPECT_LT(yawError(with_reset), 1.0 * M_PI / 180.0);
-  EXPECT_GT(with_reset.lastLikelihood().max, params_.expansion_reset.likelihood_threshold);
+  EXPECT_GT(with_reset.lastLikelihood().max, params_.point_cloud_sensor.expansion_reset_threshold);
 }
 
 TEST_F(RoomLocalizationTest, NdtMatcherAlignsFromOffsetGuess)
@@ -334,50 +334,26 @@ TEST_F(RoomLocalizationTest, GlobalLocalizationWithKldSampling)
   params_.resampling.kld.max_particle_num = 20000;
   params_.scan_sample_num = 100;
   params_.scan_filter.voxel_size = 0.3;
-  Localizer localizer(params_);
-  localizer.setPointCloudLikelihood(distanceFieldLikelihood());
-
   const GroundPoseSampler sampler(*map_, GroundPoseSampler::Params{0.5, 0.0});
-  localizer.initialize(
-    [&](RandomGenerator & rng) { return sampler.sample(rng); }, 20000, seconds(0.0));
-  runUpdates(localizer, 40);
-  EXPECT_LT(positionError(localizer), 0.1);
-  EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
-  EXPECT_LT(localizer.particles().size(), 2000u);  // KLD shrank the set after convergence
-}
 
-namespace
-{
-/// A sensor the localizer knows nothing about: ranges to beacons at known positions (e.g. UWB).
-class BeaconRangeModel : public MeasurementModel
-{
-public:
-  BeaconRangeModel(std::vector<Eigen::Vector3d> beacons, std::vector<double> ranges, double sigma)
-  : beacons_(std::move(beacons)), ranges_(std::move(ranges)), sigma_(sigma)
-  {
-  }
-
-  LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override
-  {
-    LogLikelihood result;
-    result.observation_num = beacons_.size();
-    result.values = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(particles.size()));
-    for (size_t i = 0; i < particles.size(); ++i) {
-      for (size_t k = 0; k < beacons_.size(); ++k) {
-        const double error =
-          ((particles.pose(i).position - beacons_[k]).norm() - ranges_[k]) / sigma_;
-        result.values(static_cast<Eigen::Index>(i)) -= 0.5 * error * error;
-      }
+  // Without tempering (max_effective_observation_num 0) about 1 run in 10 locked onto the
+  // mirrored pose within 40 updates; the tempered likelihood converges more slowly but every seed
+  // reaches the true pose.
+  int converged = 0;
+  for (const uint64_t seed : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+    params_.random_seed = seed;
+    Localizer localizer(params_);
+    localizer.setPointCloudLikelihood(distanceFieldLikelihood());
+    localizer.initialize(
+      [&](RandomGenerator & rng) { return sampler.sample(rng); }, 20000, seconds(time_));
+    runUpdates(localizer, 100);
+    if (positionError(localizer) < 0.1 && yawError(localizer) < 1.0 * M_PI / 180.0) {
+      ++converged;
+      EXPECT_LT(localizer.particles().size(), 2000u) << "seed " << seed;  // KLD shrank the set
     }
-    return result;
   }
-
-private:
-  std::vector<Eigen::Vector3d> beacons_;
-  std::vector<double> ranges_;
-  double sigma_;
-};
-}  // namespace
+  EXPECT_EQ(converged, 10);
+}
 
 TEST(Localizer, FusesAnyMeasurementModel)
 {
@@ -395,12 +371,15 @@ TEST(Localizer, FusesAnyMeasurementModel)
   for (const auto & beacon : beacons) {
     ranges.push_back((truth - beacon).norm());
   }
-  const BeaconRangeModel model(beacons, ranges, 0.05);
+  const auto model = std::make_shared<test::BeaconRangeModel>(beacons, ranges, 0.05);
+  const SensorId sensor = localizer.addSensor(SensorParams{"beacons"});
   for (int i = 1; i <= 10; ++i) {
-    ASSERT_EQ(localizer.update(model, seconds(0.1 * i)), LocalizerStatus::kOk);
+    ASSERT_EQ(localizer.update(sensor, model, seconds(0.1 * i)), LocalizerStatus::kOk);
   }
   EXPECT_LT((localizer.estimate().pose.position - truth).head<2>().norm(), 0.05);
-  EXPECT_EQ(localizer.update(model, seconds(0.5)), LocalizerStatus::kStaleStamp);
+  EXPECT_EQ(localizer.update(sensor, model, seconds(-0.5)), LocalizerStatus::kStaleStamp);
+  EXPECT_THROW(localizer.update(sensor + 1, model, seconds(2.0)), std::invalid_argument);
+  EXPECT_THROW(localizer.update(sensor, nullptr, seconds(2.0)), std::invalid_argument);
 }
 
 TEST(Localizer, PoseUpdateConvergesToObservation)

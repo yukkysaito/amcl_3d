@@ -125,6 +125,39 @@ TEST(ParticleFilter, UpdateReturnsPerObservationLikelihood)
   EXPECT_NEAR(likelihood.max, 0.5, 1e-12);
 }
 
+TEST(ParticleFilter, TempersTheLikelihoodToAnEffectiveObservationCount)
+{
+  // 10 observations with a log-likelihood of -x each, counted as at most 4
+  class TenObservations : public MeasurementModel
+  {
+  public:
+    LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override
+    {
+      return LogLikelihood{-10.0 * particles.positions().col(0), 10};
+    }
+  };
+  PoseWithCovariance initial;
+  initial.covariance(0, 0) = 0.01;
+  ParticleFilter tempered(4);
+  tempered.initialize(initial, 50);
+  ParticleFilter full = tempered;
+
+  const LikelihoodSummary tempered_summary = tempered.update(TenObservations(), 4);
+  const LikelihoodSummary full_summary = full.update(TenObservations(), 0);
+  const Eigen::ArrayXd x = tempered.particles().positions().col(0).array();
+  const Eigen::ArrayXd expected = (-4.0 * x).exp() / (-4.0 * x).exp().sum();
+  EXPECT_TRUE(tempered.particles().weights().array().isApprox(expected, 1e-9));
+  // the per-observation likelihood used for recovery is not tempered
+  EXPECT_DOUBLE_EQ(tempered_summary.max, full_summary.max);
+  EXPECT_DOUBLE_EQ(tempered_summary.mean, full_summary.mean);
+
+  // a limit above the observation count changes nothing
+  ParticleFilter loose(4);
+  loose.initialize(initial, 50);
+  loose.update(TenObservations(), 20);
+  EXPECT_EQ(loose.particles().logWeights(), full.particles().logWeights());
+}
+
 TEST(ParticleFilter, ExpandSpreadsAllParticlesAndResetsWeights)
 {
   ParticleFilter filter(5);

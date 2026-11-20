@@ -21,6 +21,13 @@
     # particle filter
     initial_particle_num: 500
     scan_sample_num: 200  # scan points per update (0: all)
+    # A scan counts as at most this many independent points: its points are strongly correlated,
+    # and treating them as independent makes the filter overconfident. 5-10 cut the error by
+    # 25-40 % on KITTI 07; 0 disables the limit.
+    scan_max_effective_points: 10
+    # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
+    # at their own time by replaying the newer scans [s]; costs one particle set per scan of memory.
+    max_measurement_delay: 1.0
     random_seed: -1       # -1: random
     # CPU threads of the filter; 0 uses every hardware thread, which was slower than 4-16 threads on
     # a 32 thread CPU (idle OpenMP threads spin on the cores the rest of the update runs on)
@@ -59,7 +66,7 @@
     point_cloud_likelihood:
       # likelihood_field: distance from each point to the nearest map point; most accurate
       # ndt: Mahalanobis distance to the normal distribution of the map points in each voxel;
-      #   ~10x less memory than the distance field, ~15 % more error on KITTI 07
+      #   ~10x less memory than the distance field, ~10 % more error on KITTI 07
       # gicp: ndt plus the local covariance of the scan (voxelized GICP); no gain over ndt on
       #   KITTI 07, provided for other sensors and maps
       type: likelihood_field

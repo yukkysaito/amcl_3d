@@ -171,7 +171,9 @@ void Amcl3dNode::onGlobalLocalization(
 void Amcl3dNode::addTwist(const Twist & twist, const builtin_interfaces::msg::Time & stamp)
 {
   if (!localizer_->addTwist(twist, fromMsg(stamp))) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), kThrottleMs, "twist out of order, ignored");
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), kThrottleMs,
+      "twist older than max_measurement_delay, applied from the oldest kept state on");
   }
 }
 
@@ -243,13 +245,15 @@ void Amcl3dNode::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPt
       "expansion reset (best per-point likelihood %.3f), %zu so far",
       localizer_->lastLikelihood().max, reported_expansion_resets_);
   }
-  publishEstimate(stamp);
+  // A delayed scan updates the past and replays the newer measurements: the estimate is the one at
+  // the newest measurement.
+  publishEstimate(rclcpp::Time(localizer_->stamp().nanoseconds, get_clock()->get_clock_type()));
 }
 
 void Amcl3dNode::publishEstimate(const rclcpp::Time & stamp)
 {
   PoseWithCovariance estimate = localizer_->estimate();
-  if (const auto & refined = localizer_->refinedPose()) {
+  if (const auto refined = localizer_->refinedPose()) {
     estimate.pose = *refined;  // the covariance still describes the particle cloud
   }
 

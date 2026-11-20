@@ -16,6 +16,9 @@
 // Options (defaults in Config): likelihood=likelihood_field|ndt|gicp sigma=<m>
 // map=distance_field|kdtree device=cpu|cuda resolution=<m> (likelihood field)
 // voxel_resolution=<m> voxel_neighbors=0|1 (NDT, GICP)
+// effective=<n> (max effective scan points, 0: no tempering) max_delay=<s>
+// late_every=<n> late_by=<scans> (every n-th scan arrives after the next `late_by` scans)
+// init_offset=<m> init_yaw_offset=<rad>
 // threads=<n> motion=twist|vehicle odometry=full|wheel base_x=<m> base_pitch=<rad>
 // resampler=systematic|kld
 // particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n> frames=<n>
@@ -80,7 +83,11 @@ struct Config
   bool scan_matching = false;
   bool expansion_reset = false;
   uint64_t seed = 1;
-  size_t frames = 0;  // 0: all
+  size_t frames = 0;       // 0: all
+  size_t effective = 10;   // point_cloud_sensor.max_effective_observation_num
+  double max_delay = 1.0;  // [s]
+  size_t late_every = 0;   // 0: every scan in time order
+  size_t late_by = 2;
   std::string output;
   // odometry corruption
   double odom_scale_error = 0.02;
@@ -132,6 +139,12 @@ Config parseConfig(int argc, char ** argv)
   take("expansion_reset", c.expansion_reset);
   take("seed", c.seed);
   take("frames", c.frames);
+  take("effective", c.effective);
+  take("max_delay", c.max_delay);
+  take("late_every", c.late_every);
+  take("late_by", c.late_by);
+  take("init_offset", c.init_offset);
+  take("init_yaw_offset", c.init_yaw_offset);
   take("output", c.output);
   if (!kv.empty()) {
     throw std::invalid_argument("unknown option: " + kv.begin()->first);
@@ -194,6 +207,8 @@ int main(int argc, char ** argv)
   params.resampling.type =
     config.resampler == "kld" ? ResamplerType::kKld : ResamplerType::kSystematic;
   params.expansion_reset.enabled = config.expansion_reset;
+  params.point_cloud_sensor.max_effective_observation_num = config.effective;
+  params.max_measurement_delay = config.max_delay;
   params.motion_model.type = toMotionModelType(config.motion);
   params.motion_model.twist.thread_num = config.threads;
   params.motion_model.vehicle.thread_num = config.threads;
@@ -256,6 +271,47 @@ int main(int argc, char ** argv)
     csv << "time,gt_x,gt_y,gt_z,gt_yaw,est_x,est_y,est_z,est_yaw,error,update_ms,particles\n";
   }
 
+  // Output for each frame: the estimate when that frame was the newest measurement, last delivery
+  // wins (a delayed scan replays the newer ones and updates their estimates).
+  struct Output
+  {
+    Pose estimate;
+    Pose dead_reckoning;
+    bool refined;
+    double ms;
+    size_t particle_num;
+  };
+  std::map<size_t, Output> outputs;
+  std::map<int64_t, size_t> frame_of_stamp;
+  std::vector<Pose> dead_reckoning_at(frame_num);
+  auto deliver = [&](size_t k, const PointCloud & scan) {
+    const auto start = std::chrono::steady_clock::now();
+    const LocalizerStatus status =
+      localizer.updateWithPointCloud(scan, Time::fromSeconds(sequence.times[k]));
+    const double ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (status != LocalizerStatus::kOk) {
+      std::cerr << "frame " << k << ": " << toString(status) << "\n";
+      return;
+    }
+    const size_t newest = frame_of_stamp.at(localizer.stamp().nanoseconds);
+    const auto refined = localizer.refinedPose();
+    outputs[newest] = Output{
+      refined ? *refined : localizer.estimate().pose, dead_reckoning_at[newest],
+      refined.has_value(), ms, localizer.particles().size()};
+    if ((k - 1) / 2 >= config.warmup_frames) {
+      update_ms.push_back(ms);
+    }
+  };
+
+  struct Late
+  {
+    size_t frame;
+    PointCloud scan;
+    size_t release;  // delivered once this many scans have been delivered
+  };
+  std::vector<Late> late;
+  size_t delivered = 0;
   for (size_t k = 3; k < frame_num; k += 2) {
     const double dt = sequence.times[k] - sequence.times[k - 2];
     Twist twist = TwistMotionModel::twistBetween(truth[k - 2], truth[k], dt);
@@ -269,39 +325,47 @@ int main(int argc, char ** argv)
     twist.angular.z() +=
       config.odom_yaw_rate_bias + config.odom_angular_noise * standard_normal(noise_rng);
     dead_reckoning = TwistMotionModel::integrate(dead_reckoning, twist, dt);
+    dead_reckoning_at[k] = dead_reckoning;
+    frame_of_stamp[Time::fromSeconds(sequence.times[k]).nanoseconds] = k;
     localizer.addTwist(twist, Time::fromSeconds(sequence.times[k - 2]));
 
     PointCloud scan;
     pcl::transformPointCloud(loadScan(sequence, k), scan, base_from_velodyne_matrix);
-    const auto start = std::chrono::steady_clock::now();
-    const LocalizerStatus status =
-      localizer.updateWithPointCloud(scan, Time::fromSeconds(sequence.times[k]));
-    const double ms =
-      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-    if (status != LocalizerStatus::kOk) {
-      std::cerr << "frame " << k << ": " << toString(status) << "\n";
-      continue;
+    if (config.late_every > 0 && ((k - 3) / 2) % config.late_every == config.late_every - 1) {
+      late.push_back(Late{k, std::move(scan), delivered + config.late_by});
+    } else {
+      deliver(k, scan);
+      ++delivered;
     }
+    for (auto it = late.begin(); it != late.end();) {
+      if (it->release <= delivered) {
+        deliver(it->frame, it->scan);
+        it = late.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const auto & pending : late) {
+    deliver(pending.frame, pending.scan);
+  }
 
-    Pose estimate = localizer.estimate().pose;
-    if (localizer.refinedPose()) {
-      estimate = *localizer.refinedPose();
-    }
+  for (const auto & [k, output] : outputs) {
     const Pose & true_pose = truth[k];
     if ((k - 1) / 2 >= config.warmup_frames) {
-      refined_count += localizer.refinedPose() ? 1 : 0;
-      filter_errors.add(estimate, true_pose);
-      dead_reckoning_errors.add(dead_reckoning, true_pose);
-      update_ms.push_back(ms);
-      particle_nums.push_back(static_cast<double>(localizer.particles().size()));
+      refined_count += output.refined ? 1 : 0;
+      filter_errors.add(output.estimate, true_pose);
+      dead_reckoning_errors.add(output.dead_reckoning, true_pose);
+      particle_nums.push_back(static_cast<double>(output.particle_num));
     }
     if (csv) {
+      const Pose & estimate = output.estimate;
       csv << sequence.times[k] << ',' << true_pose.position.x() << ',' << true_pose.position.y()
           << ',' << true_pose.position.z() << ',' << yawOf(true_pose.orientation) << ','
           << estimate.position.x() << ',' << estimate.position.y() << ',' << estimate.position.z()
           << ',' << yawOf(estimate.orientation) << ','
-          << (estimate.position - true_pose.position).head<2>().norm() << ',' << ms << ','
-          << localizer.particles().size() << '\n';
+          << (estimate.position - true_pose.position).head<2>().norm() << ',' << output.ms << ','
+          << output.particle_num << '\n';
     }
   }
 
@@ -317,17 +381,23 @@ int main(int argc, char ** argv)
   std::printf(
     "map=%s res=%.2f device=%s threads=%zu motion=%s odometry=%s base_x=%.2f base_pitch=%.4f "
     "resampler=%s "
-    "particles=%zu sample=%zu ndt=%d reset=%d seed=%lu\n",
+    "particles=%zu sample=%zu effective=%zu ndt=%d reset=%d late_every=%zu late_by=%zu "
+    "seed=%lu\n",
     config.map_type.c_str(), config.map_resolution, config.device.c_str(), config.threads,
     config.motion.c_str(), config.odometry.c_str(), config.base_x, config.base_pitch,
-    config.resampler.c_str(), config.particles, config.sample, config.scan_matching,
-    config.expansion_reset, static_cast<unsigned long>(config.seed));
+    config.resampler.c_str(), config.particles, config.sample, config.effective,
+    config.scan_matching, config.expansion_reset, config.late_every, config.late_by,
+    static_cast<unsigned long>(config.seed));
   std::printf(
     "  map: %zu points, built in %.1f s, %s\n", map->size(), map_seconds,
     likelihood->description().c_str());
   std::printf(
-    "  frames: %zu evaluated, lost (>1 m): %zu, refined by NDT: %zu\n",
-    filter_errors.translation.size(), lost, refined_count);
+    "  frames: %zu evaluated, lost (>1 m): %zu, refined by NDT: %zu, replayed updates: %zu\n",
+    filter_errors.translation.size(), lost, refined_count, localizer.replayedCount());
+  const Pose final_pose = localizer.estimate().pose;  // after every scan arrived
+  std::printf(
+    "  final estimate: %.9f %.9f %.9f (stamp %.3f)\n", final_pose.position.x(),
+    final_pose.position.y(), final_pose.position.z(), localizer.stamp().seconds());
   std::printf(
     "  translation [m]  rmse %.3f mean %.3f p95 %.3f max %.3f\n", t.rmse, t.mean, t.p95, t.max);
   std::printf(
