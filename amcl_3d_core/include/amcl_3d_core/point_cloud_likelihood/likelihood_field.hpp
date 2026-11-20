@@ -30,8 +30,11 @@ public:
     size_t thread_num = 4;
   };
 
-  /// Throws std::invalid_argument if the map is null, sigma <= 0 or max_distance is beyond the
-  /// distance range of the map.
+  /// Throws std::invalid_argument if sigma or max_distance is not positive.
+  static void validate(const Params & params);
+
+  /// Throws std::invalid_argument if the map is null, validate() fails or max_distance is beyond
+  /// the distance range of the map.
   LikelihoodField(std::shared_ptr<const PointCloudMap> map, const Params & params);
 
   Eigen::VectorXd logLikelihood(

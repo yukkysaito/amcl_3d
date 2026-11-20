@@ -2,9 +2,7 @@
 
 #include <algorithm>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "parallel_for.hpp"
 
 namespace amcl_3d
 {
@@ -13,17 +11,10 @@ Eigen::VectorXd PointCloudMap::sumClippedSquaredDistances(
   size_t thread_num) const
 {
   const double clip_squared_distance = clip_distance * clip_distance;
-  const auto particle_num = static_cast<Eigen::Index>(particles.size());
-  Eigen::VectorXd sums(particle_num);
-#ifdef _OPENMP
-  const int omp_thread_num = thread_num > 0 ? static_cast<int>(thread_num) : omp_get_max_threads();
-#else
-  static_cast<void>(thread_num);
-#endif
+  Eigen::VectorXd sums(static_cast<Eigen::Index>(particles.size()));
   // Each particle is summed by one thread in a fixed order, so the result does not depend on the
   // number of threads.
-#pragma omp parallel for schedule(static) num_threads(omp_thread_num)
-  for (Eigen::Index i = 0; i < particle_num; ++i) {
+  parallelFor(sums.size(), thread_num, [&](int64_t i) {
     const Pose pose = particles.pose(static_cast<size_t>(i));
     const Eigen::Matrix3d rotation = pose.orientation.toRotationMatrix();
     double sum = 0.0;
@@ -32,7 +23,7 @@ Eigen::VectorXd PointCloudMap::sumClippedSquaredDistances(
         std::min(squaredDistanceToNearest(rotation * point + pose.position), clip_squared_distance);
     }
     sums(i) = sum;
-  }
+  });
   return sums;
 }
 

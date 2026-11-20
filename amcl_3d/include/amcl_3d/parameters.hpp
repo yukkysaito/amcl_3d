@@ -4,8 +4,7 @@
 #include <string>
 
 #include "amcl_3d_core/localizer.hpp"
-#include "amcl_3d_core/map/map_factory.hpp"
-#include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/point_cloud_likelihood_factory.hpp"
 #include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 
@@ -30,9 +29,8 @@ struct NodeParams
   /// Take the angular velocity from the IMU instead of the odometry.
   bool use_imu;
 
-  /// Point cloud likelihood and the map it queries (distance range: its max_distance).
-  LikelihoodField::Params likelihood_field;
-  MapParams map;
+  /// Scan likelihood and the map representation it is built on.
+  PointCloudLikelihoodParams point_cloud_likelihood;
 
   struct GlobalLocalization
   {

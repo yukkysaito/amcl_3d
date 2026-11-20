@@ -7,6 +7,7 @@
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/ndt_likelihood.hpp"
 #include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "test_utils.hpp"
@@ -157,6 +158,20 @@ TEST_F(RoomLocalizationTest, ConvergesWithDistanceFieldMap)
   params_.scan_filter.voxel_size = 0.3;
   Localizer localizer(params_);
   localizer.setPointCloudLikelihood(distanceFieldLikelihood());
+  localizer.initialize(
+    initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
+  runUpdates(localizer, 30);
+  EXPECT_LT(positionError(localizer), 0.1);
+  EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
+}
+
+TEST_F(RoomLocalizationTest, ConvergesWithNdtLikelihood)
+{
+  params_.scan_filter.voxel_size = 0.3;
+  Localizer localizer(params_);
+  localizer.setPointCloudLikelihood(std::make_shared<NdtLikelihood>(
+    std::make_shared<GaussianVoxelMap>(*map_, GaussianVoxelMap::Params{}),
+    NdtLikelihood::Params{}));
   localizer.initialize(
     initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
   runUpdates(localizer, 30);
