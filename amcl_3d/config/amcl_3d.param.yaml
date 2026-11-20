@@ -111,6 +111,15 @@
         bin_size_xyz: 0.5  # [m]
         bin_size_yaw: 0.2  # [rad]
 
+    # Published pose: 'best_cluster' is the mean of the cluster of particles with the most weight
+    # (particles in touching grid cells form a cluster), 'mean' the mean of all particles, which
+    # lies between the modes of a multimodal cloud (e.g. during global localization).
+    estimate:
+      type: best_cluster  # best_cluster | mean
+      clustering:
+        bin_size_xyz: 0.5  # [m]
+        bin_size_yaw: 0.2  # [rad]
+
     # spread all particles when even the best particle explains the scan poorly (emcl)
     expansion_reset:
       enabled: false
