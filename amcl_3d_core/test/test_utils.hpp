@@ -4,8 +4,10 @@
 #include <cmath>
 #include <cstdint>
 #include <random>
+#include <utility>
 #include <vector>
 
+#include "amcl_3d_core/measurement_model/measurement_model.hpp"
 #include "amcl_3d_core/particle_set.hpp"
 #include "amcl_3d_core/types.hpp"
 
@@ -107,5 +109,35 @@ inline ParticleSet makeRoomParticles(size_t particle_num, uint32_t seed = 3)
   }
   return particles;
 }
+
+/// A sensor the localizer knows nothing about: ranges to beacons at known positions (e.g. UWB).
+class BeaconRangeModel : public MeasurementModel
+{
+public:
+  BeaconRangeModel(std::vector<Eigen::Vector3d> beacons, std::vector<double> ranges, double sigma)
+  : beacons_(std::move(beacons)), ranges_(std::move(ranges)), sigma_(sigma)
+  {
+  }
+
+  LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override
+  {
+    LogLikelihood result;
+    result.observation_num = beacons_.size();
+    result.values = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(particles.size()));
+    for (size_t i = 0; i < particles.size(); ++i) {
+      for (size_t k = 0; k < beacons_.size(); ++k) {
+        const double error =
+          ((particles.pose(i).position - beacons_[k]).norm() - ranges_[k]) / sigma_;
+        result.values(static_cast<Eigen::Index>(i)) -= 0.5 * error * error;
+      }
+    }
+    return result;
+  }
+
+private:
+  std::vector<Eigen::Vector3d> beacons_;
+  std::vector<double> ranges_;
+  double sigma_;
+};
 
 }  // namespace amcl_3d::test

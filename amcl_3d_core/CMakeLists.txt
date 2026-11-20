@@ -101,6 +101,8 @@ set(TEST_SOURCES
   test/test_motion_model.cpp
   test/test_resampler.cpp
   test/test_scan_filter.cpp
+  test/test_twist_history.cpp
+  test/test_asynchronous_localizer.cpp
   test/test_localizer.cpp
   test/test_cuda_distance_field_map.cpp
 )

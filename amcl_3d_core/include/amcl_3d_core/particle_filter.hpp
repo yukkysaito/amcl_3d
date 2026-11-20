@@ -34,9 +34,12 @@ public:
 
   void predict(const MotionModel & model, const Twist & twist, double dt);
 
-  /// Multiplies the weights by the measurement likelihood and normalizes them.
-  /// The returned per-observation likelihood is used to detect localization failure.
-  LikelihoodSummary update(const MeasurementModel & model);
+  /// Multiplies the weights by the measurement likelihood and normalizes them. The likelihood is
+  /// tempered to count as at most `max_effective_observation_num` independent observations (0: no
+  /// limit, see SensorParams). The returned per-observation likelihood (not tempered) is used to
+  /// detect localization failure.
+  LikelihoodSummary update(
+    const MeasurementModel & model, size_t max_effective_observation_num = 0);
 
   /// 1 / sum(w_i^2): the particle count for uniform weights, 1 if a single particle has all weight.
   double effectiveSampleSize() const;

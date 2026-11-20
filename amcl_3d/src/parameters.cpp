@@ -185,6 +185,16 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   }
   p.scan_sample_num = declareCount(
     node, "scan_sample_num", defaults.scan_sample_num, "Scan points used per update (0: all)");
+  p.point_cloud_sensor.max_effective_observation_num = declareCount(
+    node, "scan_max_effective_points", defaults.point_cloud_sensor.max_effective_observation_num,
+    "A scan counts as at most this many independent points (tempering; 0: no limit)");
+  p.max_measurement_delay = declare<double>(
+    node, "max_measurement_delay", defaults.max_measurement_delay,
+    "Measurements and odometry up to this much older than the newest scan are fused at their "
+    "own time by replaying the newer ones [s] (0: older inputs are dropped)");
+  if (!(p.max_measurement_delay >= 0.0)) {
+    throw std::invalid_argument("parameter 'max_measurement_delay' must not be negative");
+  }
   const auto seed =
     declare<int64_t>(node, "random_seed", -1, "Seed of the random generator (-1: random)");
   p.random_seed = seed < 0 ? std::random_device()() : static_cast<uint64_t>(seed);
@@ -276,8 +286,10 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   expansion.enabled = declare<bool>(
     node, "expansion_reset.enabled", defaults.expansion_reset.enabled,
     "Spread the particles when even the best one explains the scan poorly");
-  expansion.likelihood_threshold = declare<double>(
-    node, "expansion_reset.likelihood_threshold", defaults.expansion_reset.likelihood_threshold,
+  // the scans are the only sensor of the node that drives recovery
+  p.point_cloud_sensor.expansion_reset_threshold = declare<double>(
+    node, "expansion_reset.likelihood_threshold",
+    defaults.point_cloud_sensor.expansion_reset_threshold,
     "Per-point likelihood of the best particle below which the particles are spread");
   expansion.stddev = declareVector6(
     node, "expansion_reset.stddev", defaults.expansion_reset.stddev,
