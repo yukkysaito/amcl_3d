@@ -4,6 +4,7 @@
 #include <random>
 
 #include "amcl_3d_core/math.hpp"
+#include "motion_model/parallel_prediction.hpp"
 
 namespace amcl_3d
 {
@@ -58,10 +59,10 @@ void TwistMotionModel::predict(
   if (dt == 0.0) {
     return;
   }
-  if (dt < 0.0) {
-    for (size_t i = 0; i < particles.size(); ++i) {
-      particles.setPose(i, integrate(particles.pose(i), twist, dt));
-    }
+  if (dt < 0.0) {  // backwards: deterministic
+    moveParticlesInParallel(
+      particles, rng, params_.thread_num,
+      [&](const Pose & pose, RandomGenerator &) { return integrate(pose, twist, dt); });
     return;
   }
 
@@ -71,17 +72,18 @@ void TwistMotionModel::predict(
     (params_.linear_noise_scale * twist.linear.norm() + params_.linear_noise_bias) * inv_sqrt_dt;
   const double angular_stddev =
     (params_.angular_noise_scale * twist.angular.norm() + params_.angular_noise_bias) * inv_sqrt_dt;
-  std::normal_distribution<double> standard_normal(0.0, 1.0);
-  auto random_vector = [&]() {
-    return Eigen::Vector3d(standard_normal(rng), standard_normal(rng), standard_normal(rng));
-  };
-
-  for (size_t i = 0; i < particles.size(); ++i) {
-    Twist noisy_twist = twist;
-    noisy_twist.linear += linear_stddev * random_vector();
-    noisy_twist.angular += angular_stddev * random_vector();
-    particles.setPose(i, integrate(particles.pose(i), noisy_twist, dt));
-  }
+  moveParticlesInParallel(
+    particles, rng, params_.thread_num, [&](const Pose & pose, RandomGenerator & stream) {
+      std::normal_distribution<double> standard_normal(0.0, 1.0);
+      auto random_vector = [&]() {
+        return Eigen::Vector3d(
+          standard_normal(stream), standard_normal(stream), standard_normal(stream));
+      };
+      Twist noisy_twist = twist;
+      noisy_twist.linear += linear_stddev * random_vector();
+      noisy_twist.angular += angular_stddev * random_vector();
+      return integrate(pose, noisy_twist, dt);
+    });
 }
 
 }  // namespace amcl_3d

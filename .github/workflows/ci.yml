@@ -13,7 +13,7 @@ jobs:
       - name: clang-format
         run: |
           pip install clang-format==17.0.5
-          find amcl_3d amcl_3d_core -name '*.[ch]pp' | xargs clang-format --dry-run --Werror
+          find amcl_3d amcl_3d_core -name '*.[ch]pp' -o -name '*.cu' | xargs clang-format --dry-run --Werror
 
   # The core library must stay buildable without ROS.
   core-standalone:
@@ -27,6 +27,25 @@ jobs:
       - name: Build
         run: |
           cmake -S amcl_3d_core -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # The CUDA backend must compile; GitHub runners have no GPU, so its tests skip themselves.
+  cuda:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.8.0-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            cmake g++ libeigen3-dev libpcl-dev libgtest-dev
+      - name: Build
+        run: |
+          cmake -S amcl_3d_core -B build -DCMAKE_BUILD_TYPE=Release -DAMCL3D_USE_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="75;86;89;120"
           cmake --build build -j"$(nproc)"
       - name: Test
         run: ctest --test-dir build --output-on-failure

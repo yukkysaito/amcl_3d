@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
@@ -12,7 +13,6 @@ namespace
 {
 constexpr int kMinBlockSize = 16;
 constexpr double kInfinity = 1e20;  // finite "infinity" keeps the envelope arithmetic NaN free
-constexpr int8_t kNoSite = std::numeric_limits<int8_t>::min();  // no map point within range
 
 int floorDiv(int a, int b)
 {
@@ -239,6 +239,24 @@ double DistanceFieldMap::squaredDistanceToNearest(const Eigen::Vector3d & point)
     (voxel.cast<double>().array() + 0.5) * params_.resolution +
     Eigen::Vector3d(offset[0], offset[1], offset[2]).array() * offset_scale_;
   return std::min((point - site).squaredNorm(), max_squared_distance);
+}
+
+std::string DistanceFieldMap::description() const
+{
+  char text[128];
+  std::snprintf(
+    text, sizeof(text), "distance field: %.2f m voxels, %zu blocks, %.1f MB", params_.resolution,
+    blockNum(), static_cast<double>(memoryBytes()) / 1e6);
+  return text;
+}
+
+std::vector<Eigen::Vector3i> DistanceFieldMap::blockCoordinates() const
+{
+  std::vector<Eigen::Vector3i> blocks(block_index_.size());
+  for (const auto & [block, index] : block_index_) {
+    blocks[index] = block;
+  }
+  return blocks;
 }
 
 }  // namespace amcl_3d

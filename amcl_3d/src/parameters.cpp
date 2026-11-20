@@ -1,5 +1,7 @@
 #include "amcl_3d/parameters.hpp"
 
+#include "amcl_3d_core/motion_model/motion_model_factory.hpp"
+
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -54,19 +56,7 @@ ResamplerType toResamplerType(const std::string & name)
   throw std::invalid_argument("parameter 'resampling.type' must be 'systematic' or 'kld': " + name);
 }
 
-NodeParams::MapType toMapType(const std::string & name)
-{
-  if (name == "kdtree") {
-    return NodeParams::MapType::kKdTree;
-  }
-  if (name == "distance_field") {
-    return NodeParams::MapType::kDistanceField;
-  }
-  throw std::invalid_argument("parameter 'map.type' must be 'kdtree' or 'distance_field': " + name);
-}
-}  // namespace
-
-NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & localizer_params)
+NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
 {
   NodeParams p;
   p.global_frame_id =
@@ -87,11 +77,74 @@ NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & locali
   p.use_imu = declare<bool>(
     node, "use_imu", false, "Use the IMU angular velocity instead of the odometry one");
 
-  p.map_type = toMapType(declare<std::string>(
-    node, "map.type", "distance_field", "'distance_field' (fast) or 'kdtree' (exact, slow)"));
-  p.distance_field.resolution =
-    declare<double>(node, "map.resolution", 0.2, "Voxel size of the distance field [m]");
-  p.distance_field.max_distance = localizer_params.point_cloud_measurement.max_distance;
+  const PointCloudLikelihoodParams likelihood_defaults;
+  auto & likelihood = p.point_cloud_likelihood;
+  likelihood.setThreadNum(thread_num);
+  likelihood.type = toPointCloudLikelihoodType(declare<std::string>(
+    node, "point_cloud_likelihood.type", "likelihood_field",
+    "'likelihood_field' (distance to the nearest map point), 'ndt' (voxel normal distributions, "
+    "small map) or 'gicp' (ndt with the scan covariances)"));
+
+  auto & field = likelihood.likelihood_field;
+  const auto & field_defaults = likelihood_defaults.likelihood_field;
+  field.model.max_distance = declare<double>(
+    node, "point_cloud_likelihood.likelihood_field.max_distance", field_defaults.model.max_distance,
+    "Point-to-map distances are clipped here [m]");
+  field.model.sigma = declare<double>(
+    node, "point_cloud_likelihood.likelihood_field.sigma", field_defaults.model.sigma,
+    "Std dev of the point-to-map distance [m]");
+  field.map.type = toMapType(declare<std::string>(
+    node, "point_cloud_likelihood.likelihood_field.map.type", "distance_field",
+    "'distance_field' (fast) or 'kdtree' (exact, slow)"));
+  field.map.device = toMapDevice(declare<std::string>(
+    node, "point_cloud_likelihood.likelihood_field.map.device", "cpu",
+    "'cpu' or 'cuda' (distance_field only, needs a CUDA build)"));
+  field.map.resolution = declare<double>(
+    node, "point_cloud_likelihood.likelihood_field.map.resolution", field_defaults.map.resolution,
+    "Voxel size of the distance field [m]");
+
+  auto & ndt = likelihood.ndt;
+  const auto & ndt_likelihood_defaults = likelihood_defaults.ndt;
+  ndt.map.resolution = declare<double>(
+    node, "point_cloud_likelihood.ndt.resolution", ndt_likelihood_defaults.map.resolution,
+    "Voxel size of the normal distributions [m]");
+  ndt.map.min_point_num = declareCount(
+    node, "point_cloud_likelihood.ndt.min_point_num", ndt_likelihood_defaults.map.min_point_num,
+    "Voxels with fewer map points are dropped");
+  ndt.model.sigma = declare<double>(
+    node, "point_cloud_likelihood.ndt.sigma", ndt_likelihood_defaults.model.sigma,
+    "Measurement noise added to every distribution [m]");
+  ndt.model.max_mahalanobis_distance = declare<double>(
+    node, "point_cloud_likelihood.ndt.max_mahalanobis_distance",
+    ndt_likelihood_defaults.model.max_mahalanobis_distance,
+    "Per-point clipping of the Mahalanobis distance [std dev]");
+  ndt.map.search_neighbors = declare<bool>(
+    node, "point_cloud_likelihood.ndt.search_neighbors",
+    ndt_likelihood_defaults.map.search_neighbors,
+    "Also match with the 6 face-neighboring voxels (wider basin, more accurate)");
+
+  auto & gicp = likelihood.gicp;
+  const auto & gicp_defaults = likelihood_defaults.gicp;
+  gicp.map.resolution = declare<double>(
+    node, "point_cloud_likelihood.gicp.resolution", gicp_defaults.map.resolution,
+    "Voxel size of the map distributions [m]");
+  gicp.map.min_point_num = declareCount(
+    node, "point_cloud_likelihood.gicp.min_point_num", gicp_defaults.map.min_point_num,
+    "Voxels with fewer map points are dropped");
+  gicp.map.search_neighbors = declare<bool>(
+    node, "point_cloud_likelihood.gicp.search_neighbors", gicp_defaults.map.search_neighbors,
+    "Also match with the 6 face-neighboring voxels (wider basin, more accurate)");
+  gicp.model.sigma = declare<double>(
+    node, "point_cloud_likelihood.gicp.sigma", gicp_defaults.model.sigma,
+    "Measurement noise added to every pair of distributions [m]");
+  gicp.model.max_mahalanobis_distance = declare<double>(
+    node, "point_cloud_likelihood.gicp.max_mahalanobis_distance",
+    gicp_defaults.model.max_mahalanobis_distance,
+    "Per-point clipping of the Mahalanobis distance [std dev]");
+  gicp.model.neighbor_num = declareCount(
+    node, "point_cloud_likelihood.gicp.neighbor_num", gicp_defaults.model.neighbor_num,
+    "Scan points per scan covariance");
+  validate(likelihood);  // fail at startup, not when the map arrives
 
   p.global_localization.particle_num = declareCount(
     node, "global_localization.particle_num", 20000, "Particles drawn over the whole map");
@@ -119,7 +172,7 @@ NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & locali
   return p;
 }
 
-LocalizerParams declareLocalizerParams(rclcpp::Node & node)
+LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
 {
   const LocalizerParams defaults;
   LocalizerParams p;
@@ -132,31 +185,66 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
   }
   p.scan_sample_num = declareCount(
     node, "scan_sample_num", defaults.scan_sample_num, "Scan points used per update (0: all)");
+  p.point_cloud_sensor.max_effective_observation_num = declareCount(
+    node, "scan_max_effective_points", defaults.point_cloud_sensor.max_effective_observation_num,
+    "A scan counts as at most this many independent points (tempering; 0: no limit)");
+  p.max_measurement_delay = declare<double>(
+    node, "max_measurement_delay", defaults.max_measurement_delay,
+    "Measurements and odometry up to this much older than the newest scan are fused at their "
+    "own time by replaying the newer ones [s] (0: older inputs are dropped)");
+  if (!(p.max_measurement_delay >= 0.0)) {
+    throw std::invalid_argument("parameter 'max_measurement_delay' must not be negative");
+  }
   const auto seed =
     declare<int64_t>(node, "random_seed", -1, "Seed of the random generator (-1: random)");
   p.random_seed = seed < 0 ? std::random_device()() : static_cast<uint64_t>(seed);
 
   auto & motion = p.motion_model;
-  motion.linear_noise_scale = declare<double>(
-    node, "motion_model.linear_noise_scale", defaults.motion_model.linear_noise_scale,
+  motion.type = toMotionModelType(declare<std::string>(
+    node, "motion_model.type", "twist", "'twist' (generic 6-DoF) or 'vehicle' (car-like)"));
+  auto & twist = motion.twist;
+  const auto & twist_defaults = defaults.motion_model.twist;
+  twist.thread_num = thread_num;
+  twist.linear_noise_scale = declare<double>(
+    node, "motion_model.twist.linear_noise_scale", twist_defaults.linear_noise_scale,
     "Linear velocity noise proportional to |v| [1/sqrt(s)]");
-  motion.linear_noise_bias = declare<double>(
-    node, "motion_model.linear_noise_bias", defaults.motion_model.linear_noise_bias,
+  twist.linear_noise_bias = declare<double>(
+    node, "motion_model.twist.linear_noise_bias", twist_defaults.linear_noise_bias,
     "Constant linear velocity noise [m/s*sqrt(s)]");
-  motion.angular_noise_scale = declare<double>(
-    node, "motion_model.angular_noise_scale", defaults.motion_model.angular_noise_scale,
+  twist.angular_noise_scale = declare<double>(
+    node, "motion_model.twist.angular_noise_scale", twist_defaults.angular_noise_scale,
     "Angular velocity noise proportional to |w| [1/sqrt(s)]");
-  motion.angular_noise_bias = declare<double>(
-    node, "motion_model.angular_noise_bias", defaults.motion_model.angular_noise_bias,
+  twist.angular_noise_bias = declare<double>(
+    node, "motion_model.twist.angular_noise_bias", twist_defaults.angular_noise_bias,
     "Constant angular velocity noise [rad/s*sqrt(s)]");
-
-  auto & measurement = p.point_cloud_measurement;
-  measurement.max_distance = declare<double>(
-    node, "point_cloud_measurement.max_distance", defaults.point_cloud_measurement.max_distance,
-    "Point-to-map distances are clipped here [m]");
-  measurement.sigma = declare<double>(
-    node, "point_cloud_measurement.sigma", defaults.point_cloud_measurement.sigma,
-    "Std dev of the point-to-map distance [m]");
+  auto & vehicle = motion.vehicle;
+  const auto & vehicle_defaults = defaults.motion_model.vehicle;
+  vehicle.thread_num = thread_num;
+  vehicle.speed_noise_scale = declare<double>(
+    node, "motion_model.vehicle.speed_noise_scale", vehicle_defaults.speed_noise_scale,
+    "Forward speed noise proportional to |v| [1/sqrt(s)]");
+  vehicle.speed_noise_bias = declare<double>(
+    node, "motion_model.vehicle.speed_noise_bias", vehicle_defaults.speed_noise_bias,
+    "Constant forward speed noise while moving [m/s*sqrt(s)]");
+  vehicle.yaw_rate_noise_scale = declare<double>(
+    node, "motion_model.vehicle.yaw_rate_noise_scale", vehicle_defaults.yaw_rate_noise_scale,
+    "Yaw rate noise proportional to |w| [1/sqrt(s)]");
+  vehicle.yaw_rate_noise_bias = declare<double>(
+    node, "motion_model.vehicle.yaw_rate_noise_bias", vehicle_defaults.yaw_rate_noise_bias,
+    "Constant yaw rate noise while moving [rad/s*sqrt(s)]");
+  vehicle.lateral_noise_scale = declare<double>(
+    node, "motion_model.vehicle.lateral_noise_scale", vehicle_defaults.lateral_noise_scale,
+    "Lateral slip velocity noise per |v| [1/sqrt(s)]");
+  vehicle.vertical_noise_scale = declare<double>(
+    node, "motion_model.vehicle.vertical_noise_scale", vehicle_defaults.vertical_noise_scale,
+    "Vertical slip velocity noise per |v| (suspension, base frame misalignment) [1/sqrt(s)]");
+  vehicle.attitude_noise_scale = declare<double>(
+    node, "motion_model.vehicle.attitude_noise_scale", vehicle_defaults.attitude_noise_scale,
+    "Roll / pitch rate noise per |v| (road grade and bank changes) [rad/m*sqrt(s)]");
+  vehicle.min_noise_speed = declare<double>(
+    node, "motion_model.vehicle.min_noise_speed", vehicle_defaults.min_noise_speed,
+    "The noise is computed for at least this speed, so that the estimate refines while stopped "
+    "[m/s]");
 
   auto & resampling = p.resampling;
   resampling.type = toResamplerType(
@@ -198,8 +286,10 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
   expansion.enabled = declare<bool>(
     node, "expansion_reset.enabled", defaults.expansion_reset.enabled,
     "Spread the particles when even the best one explains the scan poorly");
-  expansion.likelihood_threshold = declare<double>(
-    node, "expansion_reset.likelihood_threshold", defaults.expansion_reset.likelihood_threshold,
+  // the scans are the only sensor of the node that drives recovery
+  p.point_cloud_sensor.expansion_reset_threshold = declare<double>(
+    node, "expansion_reset.likelihood_threshold",
+    defaults.point_cloud_sensor.expansion_reset_threshold,
     "Per-point likelihood of the best particle below which the particles are spread");
   expansion.stddev = declareVector6(
     node, "expansion_reset.stddev", defaults.expansion_reset.stddev,
@@ -231,6 +321,18 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
     "Perturbation std of injected particles: x, y, z [m], roll, pitch, yaw [rad]");
 
   return p;
+}
+
+}  // namespace
+
+Amcl3dParams declareParams(rclcpp::Node & node)
+{
+  // One knob for every parallel step of the filter.
+  const size_t thread_num = declareCount(
+    node, "thread_num", LikelihoodField::Params{}.thread_num,
+    "CPU threads of the filter (0: all hardware threads, often slower)");
+  return Amcl3dParams{
+    declareLocalizerParams(node, thread_num), declareNodeParams(node, thread_num)};
 }
 
 }  // namespace amcl_3d

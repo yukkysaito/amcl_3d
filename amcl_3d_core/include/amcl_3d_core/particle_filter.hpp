@@ -1,12 +1,12 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 
-#include "amcl_3d_core/gaussian_pose_sampler.hpp"
 #include "amcl_3d_core/measurement_model/measurement_model.hpp"
 #include "amcl_3d_core/motion_model/motion_model.hpp"
 #include "amcl_3d_core/particle_set.hpp"
+#include "amcl_3d_core/pose_sampler/gaussian_pose_sampler.hpp"
+#include "amcl_3d_core/pose_sampler/pose_sampler.hpp"
 #include "amcl_3d_core/random.hpp"
 #include "amcl_3d_core/resampler/resampler.hpp"
 
@@ -19,9 +19,6 @@ struct LikelihoodSummary
   double mean = 0.0;  // average over particles
   double max = 0.0;   // best particle
 };
-
-/// Draws an absolute pose.
-using PoseSampler = std::function<Pose(RandomGenerator &)>;
 
 /// Generic particle filter operations over 6-DoF poses. Knows nothing about time, maps or
 /// resampling policy; see Localizer for the orchestration.
@@ -37,9 +34,12 @@ public:
 
   void predict(const MotionModel & model, const Twist & twist, double dt);
 
-  /// Multiplies the weights by the measurement likelihood and normalizes them.
-  /// The returned per-observation likelihood is used to detect localization failure.
-  LikelihoodSummary update(const MeasurementModel & model);
+  /// Multiplies the weights by the measurement likelihood and normalizes them. The likelihood is
+  /// tempered to count as at most `max_effective_observation_num` independent observations (0: no
+  /// limit, see SensorParams). The returned per-observation likelihood (not tempered) is used to
+  /// detect localization failure.
+  LikelihoodSummary update(
+    const MeasurementModel & model, size_t max_effective_observation_num = 0);
 
   /// 1 / sum(w_i^2): the particle count for uniform weights, 1 if a single particle has all weight.
   double effectiveSampleSize() const;

@@ -17,8 +17,8 @@
 #include <string>
 
 #include "amcl_3d/parameters.hpp"
-#include "amcl_3d_core/ground_pose_sampler.hpp"
 #include "amcl_3d_core/localizer.hpp"
+#include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 
 namespace amcl_3d
 {
@@ -67,8 +67,7 @@ private:
     const std::string & target_frame, const std::string & source_frame, const rclcpp::Time & stamp);
 
   // declaration order matters: parameters are declared before the localizer is built
-  LocalizerParams localizer_params_;
-  NodeParams params_;
+  Amcl3dParams params_;
   std::unique_ptr<Localizer> localizer_;
   std::unique_ptr<GroundPoseSampler> global_sampler_;
 

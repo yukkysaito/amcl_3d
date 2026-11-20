@@ -29,17 +29,22 @@ void ParticleFilter::predict(const MotionModel & model, const Twist & twist, dou
   model.predict(twist, dt, particles_, rng_);
 }
 
-LikelihoodSummary ParticleFilter::update(const MeasurementModel & model)
+LikelihoodSummary ParticleFilter::update(
+  const MeasurementModel & model, size_t max_effective_observation_num)
 {
   if (particles_.empty()) {
     return LikelihoodSummary{};
   }
   const LogLikelihood log_likelihood = model.computeLogLikelihood(particles_);
-  particles_.logWeights() += log_likelihood.values;
-  particles_.normalizeWeights();
-
   const double observation_num =
     static_cast<double>(std::max<size_t>(log_likelihood.observation_num, 1));
+  const double exponent =
+    max_effective_observation_num > 0
+      ? std::min(1.0, static_cast<double>(max_effective_observation_num) / observation_num)
+      : 1.0;
+  particles_.logWeights() += exponent * log_likelihood.values;
+  particles_.normalizeWeights();
+
   const Eigen::ArrayXd likelihood = (log_likelihood.values.array() / observation_num).exp();
   return LikelihoodSummary{likelihood.mean(), likelihood.maxCoeff()};
 }

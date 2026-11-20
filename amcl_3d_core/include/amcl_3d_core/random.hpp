@@ -30,4 +30,12 @@ private:
 
 using RandomGenerator = XorShift128;
 
+/// Draws 64 random bits, e.g. the key of parallelStream().
+uint64_t drawKey(RandomGenerator & rng);
+
+/// Generator for element `index` of a parallel loop, determined by `key` and `index` alone
+/// (counter-based seeding). Elements can then be processed by any number of CPU threads, or on a
+/// GPU, with the same result as sequentially. Different indices give independent streams.
+RandomGenerator parallelStream(uint64_t key, uint64_t index);
+
 }  // namespace amcl_3d

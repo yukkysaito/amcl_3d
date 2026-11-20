@@ -7,12 +7,6 @@
 
     # map: load a PCD file at startup, or leave empty to subscribe to the "map" topic
     map_pcd_file: ""
-    map:
-      # distance_field: precomputed nearest map points, ~17x faster updates than kdtree with the
-      #   same accuracy on KITTI 07 (see README); memory ~0.3 MB per meter of route at 0.2 m
-      # kdtree: exact nearest neighbor search, slow (~80 ms per update with the defaults)
-      type: distance_field
-      resolution: 0.2  # [m] distance_field voxel size
 
     use_imu: false  # take the angular velocity from the "imu" topic instead of the odometry
 
@@ -27,14 +21,38 @@
     # particle filter
     initial_particle_num: 500
     scan_sample_num: 200  # scan points per update (0: all)
+    # A scan counts as at most this many independent points: its points are strongly correlated,
+    # and treating them as independent makes the filter overconfident. 5-10 cut the error by
+    # 25-40 % on KITTI 07; 0 disables the limit.
+    scan_max_effective_points: 10
+    # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
+    # at their own time by replaying the newer scans [s]; costs one particle set per scan of memory.
+    max_measurement_delay: 1.0
     random_seed: -1       # -1: random
+    # CPU threads of the filter; 0 uses every hardware thread, which was slower than 4-16 threads on
+    # a 32 thread CPU (idle OpenMP threads spin on the cores the rest of the update runs on)
+    thread_num: 4
 
-    # white velocity noise, std = scale * |velocity| + bias (per sqrt(s), on each axis)
     motion_model:
-      linear_noise_scale: 0.1   # [1/sqrt(s)]
-      linear_noise_bias: 0.1    # [m/s*sqrt(s)]
-      angular_noise_scale: 0.1  # [1/sqrt(s)]
-      angular_noise_bias: 0.02  # [rad/s*sqrt(s)]
+      # twist: generic 6-DoF body twist with isotropic white velocity noise
+      #   (std = scale * |velocity| + bias per sqrt(s), on each axis); robots, handheld sensors
+      # vehicle: car-like; uses only the forward speed and the yaw rate (base frame at the rear
+      #   axle center) with anisotropic noise that grows with the speed
+      type: twist
+      twist:
+        linear_noise_scale: 0.1   # [1/sqrt(s)]
+        linear_noise_bias: 0.1    # [m/s*sqrt(s)]
+        angular_noise_scale: 0.1  # [1/sqrt(s)]
+        angular_noise_bias: 0.02  # [rad/s*sqrt(s)]
+      vehicle:
+        speed_noise_scale: 0.05     # [1/sqrt(s)]
+        speed_noise_bias: 0.05      # [m/s*sqrt(s)]
+        yaw_rate_noise_scale: 0.05  # [1/sqrt(s)]
+        yaw_rate_noise_bias: 0.01   # [rad/s*sqrt(s)]
+        lateral_noise_scale: 0.02   # [1/sqrt(s)] lateral slip per |v|
+        vertical_noise_scale: 0.02  # [1/sqrt(s)] vertical slip per |v| (suspension, calibration)
+        attitude_noise_scale: 0.01  # [rad/m*sqrt(s)] roll / pitch rate per |v|
+        min_noise_speed: 1.0        # [m/s] noise floor, keeps refining while stopped
 
     # applied to each scan in the base frame before sampling
     scan_filter:
@@ -44,9 +62,39 @@
       max_z: 100.0      # [m]
       voxel_size: 0.5   # [m] uniform density; 0 disables
 
-    point_cloud_measurement:
-      max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
-      sigma: 0.2         # [m]
+    # how well a scan fits the map at each particle (see README, Evaluation)
+    point_cloud_likelihood:
+      # likelihood_field: distance from each point to the nearest map point; most accurate
+      # ndt: Mahalanobis distance to the normal distribution of the map points in each voxel;
+      #   ~10x less memory than the distance field, ~10 % more error on KITTI 07
+      # gicp: ndt plus the local covariance of the scan (voxelized GICP); no gain over ndt on
+      #   KITTI 07, provided for other sensors and maps
+      type: likelihood_field
+      likelihood_field:
+        max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
+        sigma: 0.2         # [m]
+        map:
+          # distance_field: precomputed nearest map points, ~12x faster updates than kdtree with
+          #   the same accuracy on KITTI 07; memory ~0.3 MB per meter of route at 0.2 m
+          # kdtree: exact nearest neighbor search, slow (~24 ms per update with the defaults)
+          type: distance_field
+          resolution: 0.2  # [m] distance_field voxel size
+          # cpu, or cuda: likelihood of the distance_field on the GPU (build amcl_3d_core with
+          #   --cmake-args -DAMCL3D_USE_CUDA=ON); worth it with many particles
+          device: cpu
+      ndt:
+        resolution: 1.0                # [m] voxel size
+        min_point_num: 6               # voxels with fewer map points are dropped
+        sigma: 0.2                     # [m] measurement noise added to every distribution
+        max_mahalanobis_distance: 5.0  # per-point clipping [std dev]
+        search_neighbors: true         # also match with the 6 face neighbors (wider basin)
+      gicp:
+        resolution: 1.0                # [m] voxel size of the map distributions
+        min_point_num: 6
+        search_neighbors: true
+        sigma: 0.2                     # [m] measurement noise added to every pair
+        max_mahalanobis_distance: 5.0  # per-point clipping [std dev]
+        neighbor_num: 10               # scan points per scan covariance
 
     resampling:
       type: systematic          # systematic | kld
@@ -62,7 +110,7 @@
     # spread all particles when even the best particle explains the scan poorly (emcl)
     expansion_reset:
       enabled: false
-      likelihood_threshold: 0.05  # per-point likelihood exp(-d^2 / (2 sigma^2)) of the best particle
+      likelihood_threshold: 0.05  # per-point likelihood of the best particle, e.g. exp(-d^2 / (2 sigma^2))
       stddev: [0.3, 0.3, 0.05, 0.01, 0.01, 0.1]  # x, y, z [m], roll, pitch, yaw [rad]
 
     # ~/global_localization service (std_srvs/Trigger); use resampling.type: kld with it

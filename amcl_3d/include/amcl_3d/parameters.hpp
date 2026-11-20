@@ -3,9 +3,9 @@
 #include <rclcpp/node.hpp>
 #include <string>
 
-#include "amcl_3d_core/ground_pose_sampler.hpp"
 #include "amcl_3d_core/localizer.hpp"
-#include "amcl_3d_core/map/distance_field_map.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/point_cloud_likelihood_factory.hpp"
+#include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 
 namespace amcl_3d
@@ -29,14 +29,8 @@ struct NodeParams
   /// Take the angular velocity from the IMU instead of the odometry.
   bool use_imu;
 
-  enum class MapType
-  {
-    kKdTree,
-    kDistanceField
-  };
-  MapType map_type;
-  /// max_distance is taken from point_cloud_measurement.max_distance.
-  DistanceFieldMap::Params distance_field;
+  /// Scan likelihood and the map representation it is built on.
+  PointCloudLikelihoodParams point_cloud_likelihood;
 
   struct GlobalLocalization
   {
@@ -51,9 +45,14 @@ struct NodeParams
   } scan_matching;
 };
 
+struct Amcl3dParams
+{
+  LocalizerParams localizer;
+  NodeParams node;
+};
+
 /// Declares all parameters on `node` and returns their values. Throws std::invalid_argument for
-/// invalid values. declareNodeParams() must be called after declareLocalizerParams().
-LocalizerParams declareLocalizerParams(rclcpp::Node & node);
-NodeParams declareNodeParams(rclcpp::Node & node, const LocalizerParams & localizer_params);
+/// invalid values.
+Amcl3dParams declareParams(rclcpp::Node & node);
 
 }  // namespace amcl_3d

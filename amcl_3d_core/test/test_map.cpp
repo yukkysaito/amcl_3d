@@ -4,8 +4,10 @@
 #include <random>
 #include <stdexcept>
 
+#include "amcl_3d_core/map/cuda_distance_field_map.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
+#include "amcl_3d_core/map/map_factory.hpp"
 #include "test_utils.hpp"
 
 namespace amcl_3d
@@ -102,6 +104,104 @@ TEST(DistanceFieldMap, OutsideTheBandIsMaxDistance)
   EXPECT_NEAR(std::sqrt(field.squaredDistanceToNearest(Eigen::Vector3d(0.3, 0.4, 0.0))), 0.5, 0.01);
   EXPECT_GT(field.memoryBytes(), 0u);
   EXPECT_THROW(DistanceFieldMap(PointCloud(), DistanceFieldMap::Params{}), std::invalid_argument);
+}
+
+}  // namespace amcl_3d
+
+namespace amcl_3d
+{
+namespace
+{
+constexpr size_t kThreadNum = 4;
+
+/// The batched query must equal the sum of single queries, whatever the backend does inside.
+void expectBatchMatchesSingleQueries(const PointCloudMap & map)
+{
+  const ParticleSet particles = test::makeRoomParticles(300);
+  const std::vector<Eigen::Vector3d> points = test::makeRoomScanPoints();
+  const double clip = 0.5;
+
+  const Eigen::VectorXd sums = map.sumClippedSquaredDistances(particles, points, clip, kThreadNum);
+  ASSERT_EQ(sums.size(), static_cast<Eigen::Index>(particles.size()));
+  for (size_t i = 0; i < particles.size(); ++i) {
+    const Pose pose = particles.pose(i);
+    double expected = 0.0;
+    for (const auto & point : points) {
+      expected += std::min(
+        map.squaredDistanceToNearest(pose.orientation * point + pose.position), clip * clip);
+    }
+    EXPECT_NEAR(sums(static_cast<Eigen::Index>(i)), expected, 1e-9 * points.size()) << i;
+  }
+}
+}  // namespace
+
+TEST(PointCloudMap, BatchedQueryMatchesSingleQueriesKdTree)
+{
+  expectBatchMatchesSingleQueries(KdTreeMap(test::makeRoomMap()));
+}
+
+TEST(PointCloudMap, BatchedQueryMatchesSingleQueriesDistanceField)
+{
+  expectBatchMatchesSingleQueries(DistanceFieldMap(*test::makeRoomMap(), {0.1, 1.0}));
+}
+
+TEST(PointCloudMap, BatchedQueryDoesNotDependOnThreadNum)
+{
+  const DistanceFieldMap map(*test::makeRoomMap(), {0.1, 1.0});
+  const ParticleSet particles = test::makeRoomParticles(1000);
+  const std::vector<Eigen::Vector3d> points = test::makeRoomScanPoints();
+
+  const Eigen::VectorXd single = map.sumClippedSquaredDistances(particles, points, 1.0, 1);
+  for (const size_t thread_num : {3, 0}) {
+    EXPECT_EQ(map.sumClippedSquaredDistances(particles, points, 1.0, thread_num), single)
+      << thread_num;
+  }
+}
+
+TEST(MapFactory, ParsesNames)
+{
+  EXPECT_EQ(toMapType("distance_field"), MapParams::Type::kDistanceField);
+  EXPECT_EQ(toMapType("kdtree"), MapParams::Type::kKdTree);
+  EXPECT_EQ(toMapDevice("cpu"), MapParams::Device::kCpu);
+  EXPECT_EQ(toMapDevice("cuda"), MapParams::Device::kCuda);
+  EXPECT_THROW(toMapType("octree"), std::invalid_argument);
+  EXPECT_THROW(toMapDevice("gpu"), std::invalid_argument);
+}
+
+TEST(MapFactory, BuildsTheRequestedMap)
+{
+  const PointCloud::Ptr cloud = test::makeRoomMap();
+  MapParams params;
+  params.resolution = 0.1;
+  const auto field = createPointCloudMap(cloud, params, 0.8);
+  ASSERT_NE(dynamic_cast<const DistanceFieldMap *>(field.get()), nullptr);
+  EXPECT_DOUBLE_EQ(field->maxDistance(), 0.8);
+  EXPECT_FALSE(field->description().empty());
+
+  params.type = MapParams::Type::kKdTree;
+  EXPECT_NE(
+    dynamic_cast<const KdTreeMap *>(createPointCloudMap(cloud, params, 0.8).get()), nullptr);
+  EXPECT_THROW(
+    createPointCloudMap(PointCloud::Ptr(new PointCloud), params, 0.8), std::invalid_argument);
+}
+
+TEST(MapFactory, RejectsInconsistentParameters)
+{
+  MapParams params;
+  params.resolution = 0.0;
+  EXPECT_THROW(validate(params), std::invalid_argument);
+
+  params = MapParams{};
+  params.type = MapParams::Type::kKdTree;
+  params.device = MapParams::Device::kCuda;
+  EXPECT_THROW(validate(params), std::invalid_argument);
+
+  params.type = MapParams::Type::kDistanceField;
+  if (CudaDistanceFieldMap::available()) {
+    EXPECT_NO_THROW(validate(params));
+  } else {
+    EXPECT_THROW(validate(params), std::invalid_argument);
+  }
 }
 
 }  // namespace amcl_3d

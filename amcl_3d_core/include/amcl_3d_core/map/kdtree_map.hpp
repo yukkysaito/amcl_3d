@@ -14,6 +14,7 @@ public:
   explicit KdTreeMap(const PointCloud::ConstPtr & cloud);
 
   double squaredDistanceToNearest(const Eigen::Vector3d & point) const override;
+  std::string description() const override;
 
 private:
   pcl::KdTreeFLANN<pcl::PointXYZ> kdtree_;
