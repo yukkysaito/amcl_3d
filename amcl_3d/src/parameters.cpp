@@ -92,6 +92,15 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
   p.transform_tolerance = declare<double>(
     node, "transform_tolerance", 0.1, "Future dating of the map->odom transform [s]");
   p.tf_timeout = declare<double>(node, "tf_timeout", 0.1, "Timeout of transform lookups [s]");
+  p.max_stamp_lead = declare<double>(
+    node, "max_stamp_lead", 1.0,
+    "Inputs stamped more than this ahead of the node clock are dropped [s]");
+  if (!(p.max_stamp_lead >= 0.0)) {
+    throw std::invalid_argument("parameter 'max_stamp_lead' must not be negative");
+  }
+  p.time_jump_threshold = declare<double>(
+    node, "time_jump_threshold", 5.0,
+    "A scan this much older than the newest one restarts the filter at its estimate [s]");
   p.publish_tf = declare<bool>(node, "publish_tf", true, "Publish the map->odom transform");
   p.publish_particles =
     declare<bool>(node, "publish_particles", true, "Publish the particles as a PoseArray");
@@ -370,8 +379,13 @@ Amcl3dParams declareParams(rclcpp::Node & node)
   const size_t thread_num = declareCount(
     node, "thread_num", LikelihoodField::Params{}.thread_num,
     "CPU threads of the filter (0: all hardware threads, often slower)");
-  return Amcl3dParams{
+  Amcl3dParams params{
     declareLocalizerParams(node, thread_num), declareNodeParams(node, thread_num)};
+  if (!(params.node.time_jump_threshold > params.localizer.max_measurement_delay)) {
+    throw std::invalid_argument(
+      "parameter 'time_jump_threshold' must be larger than 'max_measurement_delay'");
+  }
+  return params;
 }
 
 }  // namespace amcl_3d

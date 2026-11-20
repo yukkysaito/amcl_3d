@@ -126,6 +126,8 @@ protected:
       {"scan_filter.voxel_size", 0.2},
       {"motion_model.twist.linear_noise_bias", 0.02},
       {"motion_model.twist.angular_noise_bias", 0.005},
+      // scans are published much faster than their stamps advance (0.1 s each)
+      {"max_stamp_lead", 10.0},
     };
     all.insert(all.end(), parameters.begin(), parameters.end());
     options.parameter_overrides(all);
@@ -242,6 +244,41 @@ TEST_F(Amcl3dNodeTest, LocalizesFromScansAndPublishesTf)
   const Eigen::Isometry3d map_from_odom =
     tf2::transformToEigen(tf_buffer_->lookupTransform("map", "odom", tf2::TimePointZero));
   EXPECT_LT((map_from_odom.translation() - fromMsg(last_pose_->pose.pose).position).norm(), 1e-6);
+}
+
+TEST_F(Amcl3dNodeTest, DropsInputsFromTheFuture)
+{
+  start({});
+  publishInitialPose();
+  publishScans(10);
+  const builtin_interfaces::msg::Time before = last_pose_->header.stamp;
+  // e.g. a sensor on another clock: accepting it would make every later scan stale
+  const int count = pose_count_;
+  points_pub_->publish(toMsg(scan_, "lidar", io_->now() + rclcpp::Duration::from_seconds(3600.0)));
+  spinUntil([] { return false; }, 300ms);
+  EXPECT_EQ(pose_count_, count);
+  EXPECT_EQ(last_pose_->header.stamp, before);
+  publishScans(10);  // still localizing
+  EXPECT_LT(positionError(), 0.1);
+}
+
+TEST_F(Amcl3dNodeTest, RestartsWhenTimeJumpsBack)
+{
+  start({});
+  publishInitialPose();
+  publishScans(20);
+  ASSERT_LT(positionError(), 0.1);
+  // a looping rosbag: the scans start over 60 s earlier
+  const rclcpp::Time start = io_->now() - rclcpp::Duration::from_seconds(60.0);
+  for (int i = 0; i < 10; ++i) {
+    const rclcpp::Time stamp = start + rclcpp::Duration::from_seconds(0.1 * (i + 1));
+    const int expected_count = pose_count_ + 1;
+    points_pub_->publish(toMsg(scan_, "lidar", stamp));
+    ASSERT_TRUE(spinUntil([&] { return pose_count_ >= expected_count; }, 2s)) << "scan " << i;
+    EXPECT_EQ(rclcpp::Time(last_pose_->header.stamp), stamp);
+  }
+  EXPECT_LT(positionError(), 0.1);
+  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
 class Amcl3dNodeDelayTest : public Amcl3dNodeTest, public ::testing::WithParamInterface<std::string>
