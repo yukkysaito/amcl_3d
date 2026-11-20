@@ -116,7 +116,198 @@ std::vector<Event> makeEvents(SensorId beacon_sensor)
   }
   return events;
 }
+/// log p = -0.5 (coordinate / sigma)^2 of one coordinate of the particle positions.
+class AxisModel : public MeasurementModel
+{
+public:
+  AxisModel(int axis, double sigma) : axis_(axis), sigma_(sigma) {}
+  LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override
+  {
+    LogLikelihood result;
+    result.values = -0.5 * (particles.positions().col(axis_).array() / sigma_).square().matrix();
+    return result;
+  }
+
+private:
+  int axis_;
+  double sigma_;
+};
+
+/// Rules out the particles with x outside (min, max).
+class XIntervalModel : public MeasurementModel
+{
+public:
+  XIntervalModel(double min, double max) : min_(min), max_(max) {}
+  LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override
+  {
+    const Eigen::ArrayXd x = particles.positions().col(0).array();
+    LogLikelihood result;
+    result.values = (x > min_ && x < max_).select(0.0, Eigen::ArrayXd::Constant(x.size(), -1000.0));
+    return result;
+  }
+
+private:
+  double min_;
+  double max_;
+};
+
+LocalizerParams staticParams(uint64_t seed)
+{
+  LocalizerParams params = noisyParams(seed);
+  params.motion_model.twist = {0.0, 0.0, 0.0, 0.0, 1};  // particles keep their poses
+  params.resampling.ess_ratio_threshold = 1.0;          // resample at every update
+  params.max_measurement_delay = 2.0;
+  params.pose_sensor.delayed_fusion = DelayedFusion::kReweight;
+  return params;
+}
 }  // namespace
+
+TEST(AsynchronousLocalizer, ReweightingFollowsTheGenealogy)
+{
+  // Updates on y at 10 Hz resample (copy) the particles, which move without noise. Measurements
+  // on x arrive after all of them and are reweighted onto the descendants of the particles at
+  // their time: the weight must end up on particles that were inside every x interval only.
+  struct Scenario
+  {
+    const char * name;
+    std::vector<Event> late;
+    double min;
+    double max;
+    double speed = 0.0;        // forward [m/s]
+    double gate_stamp = 0.35;  // of the interval measurements, when moving
+  };
+  SensorId lateral = 0;
+  SensorId gate = 0;
+  const auto lateral_update = [&lateral](Localizer & l, const Time & s) {
+    ASSERT_EQ(l.update(lateral, std::make_shared<AxisModel>(1, 0.5), s), LocalizerStatus::kOk);
+  };
+  const auto gate_update = [&gate](double min, double max) {
+    return [&gate, min, max](Localizer & l, const Time & s) {
+      ASSERT_EQ(
+        l.update(gate, std::make_shared<XIntervalModel>(min, max), s), LocalizerStatus::kOk);
+    };
+  };
+  const std::vector<Scenario> scenarios{
+    {"one", {{0.35, 2.0, gate_update(0.0, 10.0)}}, 0.0, 10.0},
+    // the second goes through the genealogy of the newest state resampled by the first
+    {"two", {{0.35, 2.0, gate_update(0.0, 10.0)}, {0.75, 2.1, gate_update(-10.0, 0.8)}}, 0.0, 0.8},
+    // a replay from a state between the measurement and the newest one keeps its weight
+    {"replayed", {{0.35, 2.0, gate_update(0.0, 10.0)}, {1.45, 2.1, lateral_update}}, 0.0, 10.0},
+    // scored at 0.35 s on the path between the states at 0.3 s and 0.4 s
+    {"moving", {{0.35, 2.0, gate_update(0.0, 0.5)}}, 0.0, 0.5, 1.0},
+  };
+  for (const uint64_t seed : {1, 2, 3}) {
+    for (const auto & scenario : scenarios) {
+      const LocalizerParams params = staticParams(seed);
+      const auto setup = [&](Localizer & l) {
+        lateral = l.addSensor({"lateral"});
+        gate = l.addSensor({"gate", 0, false, 0.0, DelayedFusion::kReweight});
+      };
+      std::vector<Event> events = scenario.late;
+      if (scenario.speed > 0.0) {
+        Twist twist;
+        twist.linear.x() = scenario.speed;
+        events.push_back(
+          {0.0, 0.0, [twist](Localizer & l, const Time & s) { l.addTwist(twist, s); }});
+      }
+      for (int k = 1; k <= 15; ++k) {
+        events.push_back({0.1 * k, 0.1 * k, lateral_update});
+      }
+      const Localizer in_order = run(
+        params, events, [](const Event & e) { return e.stamp; }, setup);
+      const Localizer late = run(
+        params, events, [](const Event & e) { return e.arrival; }, setup);
+      EXPECT_GE(late.reweightedCount(), 1u);
+
+      const ParticleSet & particles = late.particles();
+      const Eigen::VectorXd weights = particles.weights();
+      size_t weighted = 0;
+      for (size_t i = 0; i < particles.size(); ++i) {
+        if (weights(static_cast<Eigen::Index>(i)) > 1e-6) {
+          // straight motion without noise: back to the measurement time
+          const Pose pose = particles.pose(i);
+          const double x = pose.position.x() - (pose.orientation * Eigen::Vector3d::UnitX()).x() *
+                                                 scenario.speed *
+                                                 (late.stamp().seconds() - scenario.gate_stamp);
+          EXPECT_TRUE(x > scenario.min && x < scenario.max)
+            << scenario.name << ", seed " << seed << ", particle " << i << ": x " << x;
+          ++weighted;
+        }
+      }
+      EXPECT_GT(weighted, particles.size() / 10) << scenario.name << ", seed " << seed;
+      // the same distribution as in time order, up to the sampling noise of the resampling
+      EXPECT_NEAR(late.estimate().pose.position.x(), in_order.estimate().pose.position.x(), 0.15)
+        << scenario.name << ", seed " << seed;
+    }
+  }
+}
+
+TEST(AsynchronousLocalizer, ReweightingFallsBackToReplayAcrossItsOwnBranch)
+{
+  const LocalizerParams params = staticParams(17);
+  Localizer localizer(params);
+  const SensorId gate = localizer.addSensor({"gate", 0, false, 0.0, DelayedFusion::kReweight});
+  localizer.initialize(PoseWithCovariance{}, seconds(0.0));
+  for (int k = 1; k <= 10; ++k) {
+    ASSERT_EQ(
+      localizer.update(
+        Localizer::kPointCloudSensor, std::make_shared<AxisModel>(1, 0.5), seconds(0.1 * k)),
+      LocalizerStatus::kOk);
+  }
+  const auto model = std::make_shared<AxisModel>(0, 1.0);
+  ASSERT_EQ(localizer.update(gate, model, seconds(0.55)), LocalizerStatus::kOk);
+  EXPECT_EQ(localizer.reweightedCount(), 1u);
+  EXPECT_EQ(localizer.replayedCount(), 0u);
+  // The state at 0.6 s was computed from the one at 0.5 s, not from the measurement at 0.55 s
+  // now before it: its genealogy does not lead back to the state before 0.57 s. Replay 0.6 .. 1.0.
+  ASSERT_EQ(localizer.update(gate, model, seconds(0.57)), LocalizerStatus::kOk);
+  EXPECT_EQ(localizer.reweightedCount(), 1u);
+  EXPECT_EQ(localizer.replayedCount(), 5u);
+  // which made the history consistent again
+  ASSERT_EQ(localizer.update(gate, model, seconds(0.52)), LocalizerStatus::kOk);
+  ASSERT_EQ(localizer.update(gate, model, seconds(0.58)), LocalizerStatus::kOk);
+  EXPECT_EQ(localizer.reweightedCount(), 3u);
+  EXPECT_EQ(localizer.replayedCount(), 5u);
+}
+
+TEST(AsynchronousLocalizer, ReweightingFusesLongDelaysWithoutReplaying)
+{
+  double error_sum = 0.0;
+  double in_order_error_sum = 0.0;
+  for (const uint64_t seed : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+    LocalizerParams params = noisyParams(seed);
+    params.max_measurement_delay = 2.0;
+    params.pose_sensor.delayed_fusion = DelayedFusion::kReweight;
+    SensorId beacon_sensor = 0;
+    const auto setup = [&](Localizer & l) { beacon_sensor = l.addSensor({"beacons"}); };
+    Localizer probe(params);
+    setup(probe);
+    std::vector<Event> events = makeEvents(beacon_sensor);
+    for (auto & event : events) {
+      if (event.arrival - event.stamp > 0.5) {
+        event.arrival = event.stamp + 1.5;  // the pose sensor: 15 beacon updates late
+      } else {
+        event.arrival = event.stamp;
+      }
+    }
+    const Localizer in_order = run(
+      params, events, [](const Event & e) { return e.stamp; }, setup);
+    const Localizer late = run(
+      params, events, [](const Event & e) { return e.arrival; }, setup);
+    EXPECT_EQ(late.reweightedCount(), 8u);
+    EXPECT_EQ(late.replayedCount(), 0u);
+    EXPECT_EQ(late.stamp(), in_order.stamp());
+    // as accurate as time order: on the path at the last beacon (x = 2 t, y = 0.3 t)
+    const Eigen::Vector3d truth(5.82, 0.873, 0.0);
+    const double error = (late.estimate().pose.position - truth).norm();
+    EXPECT_LT(error, 0.5) << "seed " << seed;
+    error_sum += error;
+    in_order_error_sum += (in_order.estimate().pose.position - truth).norm();
+  }
+  // measured 0.151 m and 0.140 m (0.217 m without the pose sensor); the filter's own standard
+  // deviation is 0.14 m
+  EXPECT_LT(error_sum, 1.5 * in_order_error_sum);
+}
 
 TEST(AsynchronousLocalizer, DelayedInputsGiveTheResultOfTimeOrder)
 {

@@ -28,6 +28,10 @@
     # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
     # at their own time by replaying the newer scans [s]; costs one particle set per scan of memory.
     max_measurement_delay: 1.0
+    # Fusion of a late scan: 'replay' the newer scans (exact: the result of time order) or
+    # 'reweight' the descendants of the particles at its time (retroactive particle filter, one
+    # update whatever the delay, approximate).
+    scan_delayed_fusion: replay
     random_seed: -1       # -1: random
     # CPU threads of the filter; 0 uses every hardware thread, which was slower than 4-16 threads on
     # a 32 thread CPU (idle OpenMP threads spin on the cores the rest of the update runs on)

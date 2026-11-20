@@ -244,9 +244,13 @@ TEST_F(Amcl3dNodeTest, LocalizesFromScansAndPublishesTf)
   EXPECT_LT((map_from_odom.translation() - fromMsg(last_pose_->pose.pose).position).norm(), 1e-6);
 }
 
-TEST_F(Amcl3dNodeTest, FusesDelayedScansAndPublishesTheNewestEstimate)
+class Amcl3dNodeDelayTest : public Amcl3dNodeTest, public ::testing::WithParamInterface<std::string>
 {
-  start({});
+};
+
+TEST_P(Amcl3dNodeDelayTest, FusesDelayedScansAndPublishesTheNewestEstimate)
+{
+  start({{"scan_delayed_fusion", GetParam()}});
   publishInitialPose();
   const rclcpp::Time start = io_->now();
   rclcpp::Time newest = start;
@@ -263,6 +267,9 @@ TEST_F(Amcl3dNodeTest, FusesDelayedScansAndPublishesTheNewestEstimate)
   EXPECT_LT(positionError(), 0.1);
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+  DelayedFusion, Amcl3dNodeDelayTest, ::testing::Values("replay", "reweight"));
 
 TEST_F(Amcl3dNodeTest, GlobalLocalizationService)
 {

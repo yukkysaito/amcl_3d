@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 
@@ -56,7 +57,7 @@ Localizer::Localizer(const LocalizerParams & params)
     GaussianPoseSampler::fromStandardDeviations(params.augmented_mcl.injection_stddev)),
   expansion_sampler_(GaussianPoseSampler::fromStandardDeviations(params.expansion_reset.stddev)),
   scan_filter_(params.scan_filter),
-  base_{ParticleFilter(params.random_seed), Time{}, {}, {}, 0}
+  base_{ParticleFilter(params.random_seed), Time{}, {}, {}, 0, 0, 0, {}}
 {
   if (
     params_.scan_matching.feedback &&
@@ -122,7 +123,7 @@ void Localizer::initialize(const PoseSampler & sampler, size_t particle_num, con
 
 void Localizer::initialize(ParticleFilter filter, const Time & stamp)
 {
-  base_ = FilterState{std::move(filter), stamp, {}, {}, 0};
+  base_ = FilterState{std::move(filter), stamp, {}, {}, 0, ++last_generation_, 0, {}};
   history_.clear();
   refined_pose_.reset();
   initialized_ = true;
@@ -229,9 +230,16 @@ LocalizerStatus Localizer::insert(Entry entry)
     history_.begin(), history_.end(), entry.stamp,
     [](const Time & t, const Entry & e) { return t < e.stamp; });
   const auto index = static_cast<size_t>(std::distance(history_.begin(), position));
-  history_.insert(position, std::move(entry));
-  replayed_count_ += history_.size() - index - 1;
-  replayFrom(index);
+  const bool delayed = position != history_.end();
+  const Entry & inserted = *history_.insert(position, std::move(entry));
+  const bool reweight = delayed && inserted.model &&
+                        sensors_[inserted.sensor].delayed_fusion == DelayedFusion::kReweight;
+  if (reweight && reweightFrom(index)) {
+    ++reweighted_count_;
+  } else {
+    replayed_count_ += history_.size() - index - 1;
+    replayFrom(index);
+  }
   prune();
   return LocalizerStatus::kOk;
 }
@@ -240,13 +248,109 @@ void Localizer::replayFrom(size_t index)
 {
   FilterState state = index == 0 ? base_ : history_[index - 1].state;
   for (size_t i = index; i < history_.size(); ++i) {
-    process(state, history_[i]);
+    advance(state, history_[i]);
     if (i + 1 < history_.size()) {
       history_[i].state = state;
     } else {
       history_[i].state = std::move(state);
     }
   }
+}
+
+bool Localizer::reweightFrom(size_t index)
+{
+  const FilterState & before = index == 0 ? base_ : history_[index - 1].state;
+  Entry & entry = history_[index];
+  const FilterState & after = history_[index + 1].state;  // exists: the entry is delayed
+  if (after.parent_generation != before.generation) {
+    return false;  // computed from another branch (a measurement reweighted earlier)
+  }
+
+  // Ancestor among the particles of `after` of every particle of the newer states.
+  std::vector<std::pair<uint64_t, std::vector<size_t>>> ancestors;
+  ancestors.reserve(history_.size() - index - 1);
+  {
+    std::vector<size_t> identity(after.filter.particles().size());
+    std::iota(identity.begin(), identity.end(), 0);
+    ancestors.emplace_back(after.generation, std::move(identity));
+  }
+  for (size_t i = index + 2; i < history_.size(); ++i) {
+    const FilterState & state = history_[i].state;
+    const auto parent = std::find_if(ancestors.rbegin(), ancestors.rend(), [&](const auto & a) {
+      return a.first == state.parent_generation;
+    });
+    if (parent == ancestors.rend()) {
+      return false;
+    }
+    std::vector<size_t> of_state(state.filter.particles().size());
+    for (size_t j = 0; j < of_state.size(); ++j) {
+      of_state[j] = parent->second.at(state.parents.empty() ? j : state.parents[j]);
+    }
+    ancestors.emplace_back(state.generation, std::move(of_state));
+  }
+
+  // Every particle of `after` was predicted from its parent in `before`: its pose at the
+  // measurement time lies on that path. Evaluating new predictions instead would score other
+  // random paths, which a sharp likelihood (a scan) does not correlate with the actual ones.
+  const ParticleSet & from = before.filter.particles();
+  const ParticleSet & to = after.filter.particles();
+  const double span = static_cast<double>(after.stamp.nanoseconds - before.stamp.nanoseconds);
+  const double ratio =
+    span > 0.0 ? static_cast<double>(entry.stamp.nanoseconds - before.stamp.nanoseconds) / span
+               : 1.0;
+  ParticleSet at_measurement(to.size());
+  for (size_t j = 0; j < to.size(); ++j) {
+    const Pose a = from.pose(after.parents.empty() ? j : after.parents[j]);
+    const Pose b = to.pose(j);
+    Pose pose;
+    pose.position = a.position + ratio * (b.position - a.position);
+    pose.orientation = a.orientation.slerp(ratio, b.orientation);
+    at_measurement.setPose(j, pose);
+  }
+  const LogLikelihood log_likelihood =
+    at_measurement.empty() ? LogLikelihood{} : entry.model->computeLogLikelihood(at_measurement);
+  const Eigen::VectorXd increments =
+    temperingExponent(
+      log_likelihood.observation_num, sensors_[entry.sensor].max_effective_observation_num) *
+    log_likelihood.values;
+
+  // The state after the measurement itself is computed exactly, so that a replay from it is.
+  FilterState state = before;
+  advance(state, entry);
+  entry.state = std::move(state);
+
+  // The newer states inherit the likelihood of their ancestors.
+  for (size_t i = index + 1; i < history_.size(); ++i) {
+    const std::vector<size_t> & of_state = ancestors[i - index - 1].second;
+    Eigen::VectorXd state_increments(static_cast<Eigen::Index>(of_state.size()));
+    for (size_t j = 0; j < of_state.size(); ++j) {
+      state_increments(static_cast<Eigen::Index>(j)) =
+        increments(static_cast<Eigen::Index>(of_state[j]));
+    }
+    history_[i].state.filter.reweight(state_increments);
+  }
+  FilterState & newest = history_.back().state;
+  if (needsResampling(newest.filter)) {
+    const std::vector<size_t> parents = newest.filter.resample(*resampler_);
+    if (!newest.parents.empty()) {
+      std::vector<size_t> composed(parents.size());
+      for (size_t j = 0; j < parents.size(); ++j) {
+        composed[j] = newest.parents[parents[j]];
+      }
+      newest.parents = std::move(composed);
+    } else {
+      newest.parents = parents;
+    }
+  }
+  return true;
+}
+
+void Localizer::advance(FilterState & state, const Entry & entry)
+{
+  state.parents.clear();
+  state.parent_generation = state.generation;
+  process(state, entry);
+  state.generation = ++last_generation_;
 }
 
 void Localizer::prune()
@@ -267,7 +371,10 @@ void Localizer::process(FilterState & state, const Entry & entry) const
 {
   predict(state, entry.stamp);
   if (entry.model) {
-    correct(state, entry.sensor, *entry.model);
+    const ParticleSet & particles = state.filter.particles();
+    correct(
+      state, entry.sensor,
+      particles.empty() ? LogLikelihood{} : entry.model->computeLogLikelihood(particles));
   }
 }
 
@@ -279,10 +386,12 @@ void Localizer::predict(FilterState & state, const Time & stamp) const
   state.stamp = stamp;
 }
 
-void Localizer::correct(FilterState & state, SensorId sensor, const MeasurementModel & model) const
+void Localizer::correct(
+  FilterState & state, SensorId sensor, const LogLikelihood & log_likelihood) const
 {
   const SensorParams & sensor_params = sensors_[sensor];
-  state.last_likelihood = state.filter.update(model, sensor_params.max_effective_observation_num);
+  state.last_likelihood =
+    state.filter.update(log_likelihood, sensor_params.max_effective_observation_num);
 
   if (sensor_params.drives_recovery) {
     if (state.recovery.size() <= sensor) {
@@ -302,12 +411,10 @@ void Localizer::correct(FilterState & state, SensorId sensor, const MeasurementM
     }
   }
 
-  const double particle_num = static_cast<double>(state.filter.particles().size());
-  const double threshold = params_.resampling.ess_ratio_threshold;
-  if (threshold < 1.0 && state.filter.effectiveSampleSize() >= threshold * particle_num) {
+  if (!needsResampling(state.filter)) {
     return;
   }
-  state.filter.resample(*resampler_);
+  state.parents = state.filter.resample(*resampler_);
   if (params_.augmented_mcl.enabled) {
     double ratio = 0.0;
     for (const auto & statistics : state.recovery) {
@@ -319,6 +426,13 @@ void Localizer::correct(FilterState & state, SensorId sensor, const MeasurementM
       state.filter.injectRandomParticles(ratio, injection_sampler_);
     }
   }
+}
+
+bool Localizer::needsResampling(const ParticleFilter & filter) const
+{
+  const double threshold = params_.resampling.ess_ratio_threshold;
+  return threshold >= 1.0 ||
+         filter.effectiveSampleSize() < threshold * static_cast<double>(filter.particles().size());
 }
 
 // ---- scans
