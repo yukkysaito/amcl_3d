@@ -122,6 +122,15 @@ const char * toString(LocalizerStatus status);
 /// order, which the tests check bit for bit. Between measurements, buffered twists are integrated
 /// piecewise; before the first twist the vehicle is assumed to stand still.
 ///
+/// Replaying costs one update per newer measurement, i.e. delay x update rate. Sensors with
+/// DelayedFusion::kReweight are instead fused retroactively (Takeuchi et al., ROBOMECH 2010):
+/// every state records the particle each of its particles descends from, so the late measurement
+/// is evaluated once, on the particles at its time (interpolated on the path from each particle's
+/// parent to it), and its likelihood multiplies the weights of their descendants in every newer
+/// state. Weights commute, so this equals time order as long as the descendants are copies; it is
+/// approximate in that the resampling, resets and recovery statistics in between did not know
+/// the measurement. A replay that later covers such a measurement fuses it exactly again.
+///
 /// Sensors: any measurement is fused by update() through a MeasurementModel of it, so a new
 /// sensor (camera landmarks, GNSS, ...) needs a model and an addSensor() call, no change here.
 /// SensorParams sets per sensor how sharp its likelihood may be and whether it drives recovery.
@@ -196,9 +205,11 @@ public:
   size_t expansionResetCount() const { return current().expansion_reset_count; }
   /// Time the particles currently represent (the newest measurement).
   const Time & stamp() const { return current().stamp; }
-  /// Measurements kept for delayed ones, and measurements processed again so far (diagnostics).
+  /// Measurements kept for delayed ones, measurements processed again so far, and delayed
+  /// measurements fused by reweighting so far (diagnostics).
   size_t historySize() const { return history_.size(); }
   size_t replayedCount() const { return replayed_count_; }
+  size_t reweightedCount() const { return reweighted_count_; }
 
 private:
   struct RecoveryStatistics
@@ -210,11 +221,16 @@ private:
   /// Everything a measurement changes; restored to replay.
   struct FilterState
   {
-    ParticleFilter filter;
+    ParticleFilter filter{};
     Time stamp;
     std::vector<RecoveryStatistics> recovery;  // per sensor
     LikelihoodSummary last_likelihood;
     size_t expansion_reset_count = 0;
+    // Genealogy for reweighting: this particle set was computed from the set `parent_generation`
+    // and particle i descends from its particle parents[i] (empty: from particle i).
+    uint64_t generation = 0;
+    uint64_t parent_generation = 0;
+    std::vector<size_t> parents;
   };
 
   struct Entry
@@ -230,10 +246,16 @@ private:
   LocalizerStatus insert(Entry entry);
   /// Recomputes the states of history_[index] and after.
   void replayFrom(size_t index);
+  /// Fuses the delayed history_[index] retroactively; false (nothing changed) if the genealogy
+  /// of a newer state does not lead back to the state before it.
+  bool reweightFrom(size_t index);
+  /// process() plus the genealogy.
+  void advance(FilterState & state, const Entry & entry);
   void prune();
   void process(FilterState & state, const Entry & entry) const;
   void predict(FilterState & state, const Time & stamp) const;
-  void correct(FilterState & state, SensorId sensor, const MeasurementModel & model) const;
+  void correct(FilterState & state, SensorId sensor, const LogLikelihood & log_likelihood) const;
+  bool needsResampling(const ParticleFilter & filter) const;
   std::vector<Eigen::Vector3d> samplePoints(
     const std::vector<Eigen::Vector3d> & points, const Time & stamp) const;
   void refineByScanMatching(const std::vector<Eigen::Vector3d> & points, const Time & stamp);
@@ -255,6 +277,8 @@ private:
   std::deque<Entry> history_;
   TwistHistory twists_;
   size_t replayed_count_ = 0;
+  size_t reweighted_count_ = 0;
+  uint64_t last_generation_ = 0;
   std::optional<std::pair<Time, Pose>> refined_pose_;
 };
 

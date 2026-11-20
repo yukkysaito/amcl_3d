@@ -9,6 +9,16 @@
 
 namespace amcl_3d
 {
+double temperingExponent(size_t observation_num, size_t max_effective_observation_num)
+{
+  if (max_effective_observation_num == 0) {
+    return 1.0;
+  }
+  return std::min(
+    1.0, static_cast<double>(max_effective_observation_num) /
+           static_cast<double>(std::max<size_t>(observation_num, 1)));
+}
+
 void ParticleFilter::initialize(const PoseWithCovariance & initial_pose, size_t particle_num)
 {
   const GaussianPoseSampler sampler(initial_pose.covariance);
@@ -35,18 +45,29 @@ LikelihoodSummary ParticleFilter::update(
   if (particles_.empty()) {
     return LikelihoodSummary{};
   }
-  const LogLikelihood log_likelihood = model.computeLogLikelihood(particles_);
+  return update(model.computeLogLikelihood(particles_), max_effective_observation_num);
+}
+
+LikelihoodSummary ParticleFilter::update(
+  const LogLikelihood & log_likelihood, size_t max_effective_observation_num)
+{
+  if (particles_.empty()) {
+    return LikelihoodSummary{};
+  }
   const double observation_num =
     static_cast<double>(std::max<size_t>(log_likelihood.observation_num, 1));
-  const double exponent =
-    max_effective_observation_num > 0
-      ? std::min(1.0, static_cast<double>(max_effective_observation_num) / observation_num)
-      : 1.0;
-  particles_.logWeights() += exponent * log_likelihood.values;
-  particles_.normalizeWeights();
+  reweight(
+    temperingExponent(log_likelihood.observation_num, max_effective_observation_num) *
+    log_likelihood.values);
 
   const Eigen::ArrayXd likelihood = (log_likelihood.values.array() / observation_num).exp();
   return LikelihoodSummary{likelihood.mean(), likelihood.maxCoeff()};
+}
+
+void ParticleFilter::reweight(const Eigen::VectorXd & log_weight_increments)
+{
+  particles_.logWeights() += log_weight_increments;
+  particles_.normalizeWeights();
 }
 
 double ParticleFilter::effectiveSampleSize() const
@@ -57,12 +78,14 @@ double ParticleFilter::effectiveSampleSize() const
   return 1.0 / particles_.weights().squaredNorm();
 }
 
-void ParticleFilter::resample(const Resampler & resampler)
+std::vector<size_t> ParticleFilter::resample(const Resampler & resampler)
 {
   if (particles_.empty()) {
-    return;
+    return {};
   }
-  particles_ = particles_.select(resampler.drawIndices(particles_, rng_));
+  std::vector<size_t> parents = resampler.drawIndices(particles_, rng_);
+  particles_ = particles_.select(parents);
+  return parents;
 }
 
 void ParticleFilter::injectRandomParticles(double ratio, const GaussianPoseSampler & sampler)

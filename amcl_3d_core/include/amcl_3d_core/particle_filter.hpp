@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "amcl_3d_core/measurement_model/measurement_model.hpp"
 #include "amcl_3d_core/motion_model/motion_model.hpp"
@@ -19,6 +20,10 @@ struct LikelihoodSummary
   double mean = 0.0;  // average over particles
   double max = 0.0;   // best particle
 };
+
+/// Exponent that tempers a likelihood of `observation_num` observations to count as at most
+/// `max_effective_observation_num` (0: no limit, see SensorParams).
+double temperingExponent(size_t observation_num, size_t max_effective_observation_num);
 
 /// Generic particle filter operations over 6-DoF poses. Knows nothing about time, maps or
 /// resampling policy; see Localizer for the orchestration.
@@ -40,11 +45,18 @@ public:
   /// detect localization failure.
   LikelihoodSummary update(
     const MeasurementModel & model, size_t max_effective_observation_num = 0);
+  /// update() with a log-likelihood already computed for the current particles.
+  LikelihoodSummary update(
+    const LogLikelihood & log_likelihood, size_t max_effective_observation_num = 0);
+
+  /// Adds `log_weight_increments` (one per particle) to the log weights and normalizes them.
+  void reweight(const Eigen::VectorXd & log_weight_increments);
 
   /// 1 / sum(w_i^2): the particle count for uniform weights, 1 if a single particle has all weight.
   double effectiveSampleSize() const;
 
-  void resample(const Resampler & resampler);
+  /// Returns the parent of every new particle: the index of the particle it copies.
+  std::vector<size_t> resample(const Resampler & resampler);
 
   /// Replaces round(ratio * N) randomly chosen particles by poses sampled around themselves.
   /// Used by augmented MCL to recover from localization failure.

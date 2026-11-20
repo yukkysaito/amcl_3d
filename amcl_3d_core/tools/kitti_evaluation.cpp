@@ -18,6 +18,7 @@
 // voxel_resolution=<m> voxel_neighbors=0|1 (NDT, GICP)
 // effective=<n> (max effective scan points, 0: no tempering) max_delay=<s>
 // late_every=<n> late_by=<scans> (every n-th scan arrives after the next `late_by` scans)
+// late_fusion=replay|reweight
 // init_offset=<m> init_yaw_offset=<rad>
 // threads=<n> motion=twist|vehicle odometry=full|wheel base_x=<m> base_pitch=<rad>
 // resampler=systematic|kld
@@ -88,6 +89,7 @@ struct Config
   double max_delay = 1.0;  // [s]
   size_t late_every = 0;   // 0: every scan in time order
   size_t late_by = 2;
+  std::string late_fusion = "replay";
   std::string output;
   // odometry corruption
   double odom_scale_error = 0.02;
@@ -143,6 +145,7 @@ Config parseConfig(int argc, char ** argv)
   take("max_delay", c.max_delay);
   take("late_every", c.late_every);
   take("late_by", c.late_by);
+  take("late_fusion", c.late_fusion);
   take("init_offset", c.init_offset);
   take("init_yaw_offset", c.init_yaw_offset);
   take("output", c.output);
@@ -209,6 +212,11 @@ int main(int argc, char ** argv)
   params.expansion_reset.enabled = config.expansion_reset;
   params.point_cloud_sensor.max_effective_observation_num = config.effective;
   params.max_measurement_delay = config.max_delay;
+  if (config.late_fusion == "reweight") {
+    params.point_cloud_sensor.delayed_fusion = DelayedFusion::kReweight;
+  } else if (config.late_fusion != "replay") {
+    throw std::invalid_argument("unknown late_fusion: " + config.late_fusion);
+  }
   params.motion_model.type = toMotionModelType(config.motion);
   params.motion_model.twist.thread_num = config.threads;
   params.motion_model.vehicle.thread_num = config.threads;
@@ -382,18 +390,20 @@ int main(int argc, char ** argv)
     "map=%s res=%.2f device=%s threads=%zu motion=%s odometry=%s base_x=%.2f base_pitch=%.4f "
     "resampler=%s "
     "particles=%zu sample=%zu effective=%zu ndt=%d reset=%d late_every=%zu late_by=%zu "
-    "seed=%lu\n",
+    "late_fusion=%s seed=%lu\n",
     config.map_type.c_str(), config.map_resolution, config.device.c_str(), config.threads,
     config.motion.c_str(), config.odometry.c_str(), config.base_x, config.base_pitch,
     config.resampler.c_str(), config.particles, config.sample, config.effective,
     config.scan_matching, config.expansion_reset, config.late_every, config.late_by,
-    static_cast<unsigned long>(config.seed));
+    config.late_fusion.c_str(), static_cast<unsigned long>(config.seed));
   std::printf(
     "  map: %zu points, built in %.1f s, %s\n", map->size(), map_seconds,
     likelihood->description().c_str());
   std::printf(
-    "  frames: %zu evaluated, lost (>1 m): %zu, refined by NDT: %zu, replayed updates: %zu\n",
-    filter_errors.translation.size(), lost, refined_count, localizer.replayedCount());
+    "  frames: %zu evaluated, lost (>1 m): %zu, refined by NDT: %zu, replayed updates: %zu, "
+    "reweighted scans: %zu\n",
+    filter_errors.translation.size(), lost, refined_count, localizer.replayedCount(),
+    localizer.reweightedCount());
   const Pose final_pose = localizer.estimate().pose;  // after every scan arrived
   std::printf(
     "  final estimate: %.9f %.9f %.9f (stamp %.3f)\n", final_pose.position.x(),

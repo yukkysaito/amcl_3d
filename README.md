@@ -72,7 +72,8 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Asynchronous, delayed sensors**: measurements and odometry are fused in the order of their
   stamps whatever their arrival order; one that arrives up to `max_measurement_delay` late is
   inserted at its time and the newer measurements are replayed, with the same result as if it had
-  arrived in time (see Design)
+  arrived in time; or, per sensor, reweighted onto the descendants of the particles at its time
+  (retroactive particle filter), at the cost of one update whatever the delay (see Design)
 - **Prediction**: odometry twists (optionally with IMU angular velocity) are buffered and integrated
   on SE(3) up to each measurement stamp; white velocity noise independent of the odometry rate,
   with
@@ -162,9 +163,30 @@ generator is part of the restored state and scans are sampled from a generator s
 stamp, the result is bit for bit the one of time-ordered arrival (tested on synthetic data and on
 the whole KITTI sequence). Inputs older than the history are rejected. The cost is one particle set
 of memory per measurement within the delay and, for a late measurement, one update per newer
-measurement. Re-filtering was chosen over reweighting the current particles by their ancestors'
-past poses (cheaper, but it breaks after expansion resets and degenerates with resampling), and
-over a fixed-lag queue (which would delay every output by the slowest sensor).
+measurement. A fixed-lag queue was rejected: it would delay every output by the slowest sensor.
+
+Replaying costs delay x update rate updates, e.g. 30 scan updates for a sensor 3 s late. A sensor
+can instead use `DelayedFusion::kReweight` (node: `scan_delayed_fusion: reweight`), the
+retroactive particle filter of Takeuchi et al. (ROBOMECH 2010): each state also records the parent
+of each particle at resampling (its genealogy), so a late measurement is evaluated once on the
+particles at its time and its likelihood multiplies the weights of their descendants in every
+newer state:
+
+```
+state before m2'   p0   p1   p2   p3         m2' scores the particles at its time, on the path from
+                    │    ├────┐    │          each parent to its child (interpolated); each newer
+state after  m3    p0   p1   p1   p3         particle inherits the score of its ancestor
+                    ├────┐    │    │
+state after  m4    p0   p0   p1   p3
+```
+
+Weights commute, so this is the result of time order as long as the particles are only copied in
+between; it is approximate in that the resampling, resets and recovery statistics in between did
+not know the measurement. The particles must be scored on their actual paths: scoring fresh
+predictions instead (another random path from the same parent) is uncorrelated with the
+descendants under a sharp scan likelihood and was worse on KITTI than dropping the scan. When a
+genealogy does not lead back to the state before the measurement (a newer state computed from
+another branch), the measurement is replayed instead, which also makes the history exact again.
 
 All measurement models follow one convention: the log-likelihood of an observation is <= 0 and 0
 when it is perfectly explained, so that `exp(log-likelihood / observation count)` is a likelihood
@@ -255,6 +277,29 @@ repeated identical scans: from a static scan, global localization in the synthet
 
 The estimates published while a scan is missing cannot use it, so the error of the published
 poses is higher; once it arrives, the history is the one of time-ordered arrival, bit for bit.
+
+Replaying versus reweighting late scans (`late_fusion=replay|reweight`), against dropping them
+(`max_delay=0`); translation RMSE of the published estimates, mean (range) over seeds 1-6:
+
+| every third scan late by | dropped | replayed | reweighted |
+|---|---|---|---|
+| 0.4 s (`late_by=2`) | 0.133 (0.128-0.140) | 0.126 (0.122-0.128) | 0.138 (0.127-0.149) |
+| 1.4 s (`late_by=5`) | 0.133 (0.128-0.140) | 0.131 (0.124-0.135) | 0.138 (0.129-0.146) |
+| 2.8 s (`late_by=10`, `max_delay=4`) | 0.133 (0.128-0.140) | 0.133 (0.123-0.138) | 0.135 (0.124-0.145) |
+
+(0.102 in time order.) Update time per delivered scan, mean / p95 / max [ms], seed 1:
+
+| every third scan late by | replayed | reweighted |
+|---|---|---|
+| 0.4 s | 2.4 / 3.6 / 4.4 | 2.1 / 2.6 / 3.0 |
+| 2.8 s | 4.6 / 10.8 / 14.0 | 2.1 / 2.7 / 3.9 |
+
+Reweighting keeps the cost of a late scan at one update whatever its delay, but on KITTI it was
+no more accurate than dropping the scan, presumably because the newer scans already carry its
+information. The exact replay is therefore the default. Reweighting pays off for a slow sensor
+whose information the others lack, behind a fast one: in the tests, an absolute pose sensor 1.5 s
+late behind 10 Hz updates, reweighted, is nearly as accurate as in time order (0.15 vs 0.14 m over
+ten seeds, 0.22 m without the sensor), with no replay.
 
 ### Scan likelihoods
 
@@ -357,6 +402,10 @@ single precision; sums agree with the CPU to rounding except for rare points on 
 - D. Fox, "Adapting the sample size in particle filters through KLD-sampling", IJRR 2003
 - F. L. Markley et al., "Averaging quaternions", JGCD 2007
 - P. F. Felzenszwalb, D. P. Huttenlocher, "Distance Transforms of Sampled Functions", ToC 2012
+- E. Takeuchi, K. Ohno, S. Tadokoro, "Modularized retroactive particle filter" (in Japanese),
+  ROBOMECH 2010, 1A2-E15 — https://doi.org/10.1299/jsmermd.2010._1A2-E15_1
+- S. Maeyama, A. Ohya, S. Yuta, "Non-stop outdoor navigation of a mobile robot: retroactive
+  positioning data fusion with a time consuming sensor system", IROS 1995
 - R. Ueda et al., "Expansion resetting for recovery from fatal error in Monte Carlo localization", IROS 2004
 - M. Magnusson, "The three-dimensional normal-distributions transform", 2009
 - Effective sample size — http://www.cns.nyu.edu/~eorhan/notes/particle-filtering.pdf

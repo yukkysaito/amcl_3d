@@ -56,6 +56,18 @@ ResamplerType toResamplerType(const std::string & name)
   throw std::invalid_argument("parameter 'resampling.type' must be 'systematic' or 'kld': " + name);
 }
 
+DelayedFusion toDelayedFusion(const std::string & name)
+{
+  if (name == "replay") {
+    return DelayedFusion::kReplay;
+  }
+  if (name == "reweight") {
+    return DelayedFusion::kReweight;
+  }
+  throw std::invalid_argument(
+    "parameter 'scan_delayed_fusion' must be 'replay' or 'reweight': " + name);
+}
+
 NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
 {
   NodeParams p;
@@ -195,6 +207,10 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   if (!(p.max_measurement_delay >= 0.0)) {
     throw std::invalid_argument("parameter 'max_measurement_delay' must not be negative");
   }
+  p.point_cloud_sensor.delayed_fusion = toDelayedFusion(declare<std::string>(
+    node, "scan_delayed_fusion", "replay",
+    "Fusion of a late scan: 'replay' the newer scans (exact) or 'reweight' the descendants of the "
+    "particles at its time (one update whatever the delay, approximate)"));
   const auto seed =
     declare<int64_t>(node, "random_seed", -1, "Seed of the random generator (-1: random)");
   p.random_seed = seed < 0 ? std::random_device()() : static_cast<uint64_t>(seed);
