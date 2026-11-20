@@ -77,16 +77,13 @@ __device__ float clippedSquaredDistance(
   const int bx = floorDiv(vx, b);
   const int by = floorDiv(vy, b);
   const int bz = floorDiv(vz, b);
-  const int gx = bx - layout.block_min[0];
-  const int gy = by - layout.block_min[1];
-  const int gz = bz - layout.block_min[2];
   if (
-    gx < 0 || gy < 0 || gz < 0 || gx >= layout.block_dims[0] || gy >= layout.block_dims[1] ||
-    gz >= layout.block_dims[2]) {
+    bx < 0 || by < 0 || bz < 0 || bx >= layout.block_dims[0] || by >= layout.block_dims[1] ||
+    bz >= layout.block_dims[2]) {
     return clip_squared;
   }
   const int32_t block =
-    block_lookup[(static_cast<size_t>(gz) * layout.block_dims[1] + gy) * layout.block_dims[0] + gx];
+    block_lookup[(static_cast<size_t>(bz) * layout.block_dims[1] + by) * layout.block_dims[0] + bx];
   if (block < 0) {
     return clip_squared;
   }

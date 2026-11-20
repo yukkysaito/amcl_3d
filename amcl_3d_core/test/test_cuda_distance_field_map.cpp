@@ -75,6 +75,39 @@ TEST_F(CudaDistanceFieldMapTest, MatchesCpuField)
   }
 }
 
+// Maps in projected coordinates (UTM, MGRS) lie far from the origin, where single precision steps
+// are coarse: 0.06 m at 5e5 m. The GPU must still agree with the CPU field.
+TEST(CudaDistanceFieldMap, MatchesCpuFieldFarFromTheOrigin)
+{
+  if (!CudaDistanceFieldMap::available()) {
+    GTEST_SKIP() << "no CUDA device (or built without CUDA)";
+  }
+  // The map stores floats: snap the room to a 1/16 m grid, which floats represent exactly up to
+  // 2^20 m, so that it keeps its geometry and both backends see the same map.
+  const Eigen::Vector3d offset(524288.0, -262144.0, 32.0);
+  PointCloud map = *test::makeRoomMap();
+  for (auto & p : map) {
+    const Eigen::Vector3d snapped =
+      (p.getVector3fMap().cast<double>() * 16.0).array().round() / 16.0;
+    p.getVector3fMap() = (snapped + offset).cast<float>();
+  }
+  const auto field = std::make_shared<DistanceFieldMap>(map, DistanceFieldMap::Params{});
+  const CudaDistanceFieldMap gpu_map(field);
+  ParticleSet particles = test::makeRoomParticles(2000);
+  for (size_t i = 0; i < particles.size(); ++i) {
+    Pose pose = particles.pose(i);
+    pose.position += offset;
+    particles.setPose(i, pose);
+  }
+  const std::vector<Eigen::Vector3d> points = test::makeRoomScanPoints();
+  const Eigen::VectorXd cpu = field->sumClippedSquaredDistances(particles, points, 1.0, 1);
+  const Eigen::VectorXd gpu = gpu_map.sumClippedSquaredDistances(particles, points, 1.0, 1);
+  // same bounds as near the origin (MatchesCpuField)
+  const Eigen::ArrayXd error = (gpu - cpu).cwiseAbs().array();
+  EXPECT_LT((error > 1e-3).cast<double>().mean(), 0.03);
+  EXPECT_LT(error.mean(), 2e-3);
+}
+
 TEST_F(CudaDistanceFieldMapTest, HandlesEmptyInputs)
 {
   EXPECT_EQ(map_->sumClippedSquaredDistances(ParticleSet(), makePoints(), 1.0, 1).size(), 0);
