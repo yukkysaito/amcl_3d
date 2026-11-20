@@ -56,9 +56,7 @@ ResamplerType toResamplerType(const std::string & name)
   throw std::invalid_argument("parameter 'resampling.type' must be 'systematic' or 'kld': " + name);
 }
 
-}  // namespace
-
-NodeParams declareNodeParams(rclcpp::Node & node)
+NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
 {
   NodeParams p;
   p.global_frame_id =
@@ -78,6 +76,16 @@ NodeParams declareNodeParams(rclcpp::Node & node)
     "Std dev used when the initial pose has no covariance: x, y, z [m], roll, pitch, yaw [rad]");
   p.use_imu = declare<bool>(
     node, "use_imu", false, "Use the IMU angular velocity instead of the odometry one");
+
+  const LikelihoodField::Params likelihood_defaults;
+  auto & likelihood = p.likelihood_field;
+  likelihood.thread_num = thread_num;
+  likelihood.max_distance = declare<double>(
+    node, "point_cloud_measurement.max_distance", likelihood_defaults.max_distance,
+    "Point-to-map distances are clipped here [m]");
+  likelihood.sigma = declare<double>(
+    node, "point_cloud_measurement.sigma", likelihood_defaults.sigma,
+    "Std dev of the point-to-map distance [m]");
 
   p.map.type = toMapType(declare<std::string>(
     node, "map.type", "distance_field", "'distance_field' (fast) or 'kdtree' (exact, slow)"));
@@ -113,7 +121,7 @@ NodeParams declareNodeParams(rclcpp::Node & node)
   return p;
 }
 
-LocalizerParams declareLocalizerParams(rclcpp::Node & node)
+LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
 {
   const LocalizerParams defaults;
   LocalizerParams p;
@@ -129,11 +137,6 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
   const auto seed =
     declare<int64_t>(node, "random_seed", -1, "Seed of the random generator (-1: random)");
   p.random_seed = seed < 0 ? std::random_device()() : static_cast<uint64_t>(seed);
-  // One knob for every parallel step of the filter.
-  const size_t thread_num = declareCount(
-    node, "thread_num", defaults.point_cloud_measurement.thread_num,
-    "CPU threads of the filter (0: all hardware threads, often slower)");
-  p.point_cloud_measurement.thread_num = thread_num;
 
   auto & motion = p.motion_model;
   motion.type = toMotionModelType(declare<std::string>(
@@ -181,14 +184,6 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
     node, "motion_model.vehicle.min_noise_speed", vehicle_defaults.min_noise_speed,
     "The noise is computed for at least this speed, so that the estimate refines while stopped "
     "[m/s]");
-
-  auto & measurement = p.point_cloud_measurement;
-  measurement.max_distance = declare<double>(
-    node, "point_cloud_measurement.max_distance", defaults.point_cloud_measurement.max_distance,
-    "Point-to-map distances are clipped here [m]");
-  measurement.sigma = declare<double>(
-    node, "point_cloud_measurement.sigma", defaults.point_cloud_measurement.sigma,
-    "Std dev of the point-to-map distance [m]");
 
   auto & resampling = p.resampling;
   resampling.type = toResamplerType(
@@ -263,6 +258,18 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node)
     "Perturbation std of injected particles: x, y, z [m], roll, pitch, yaw [rad]");
 
   return p;
+}
+
+}  // namespace
+
+Amcl3dParams declareParams(rclcpp::Node & node)
+{
+  // One knob for every parallel step of the filter.
+  const size_t thread_num = declareCount(
+    node, "thread_num", LikelihoodField::Params{}.thread_num,
+    "CPU threads of the filter (0: all hardware threads, often slower)");
+  return Amcl3dParams{
+    declareLocalizerParams(node, thread_num), declareNodeParams(node, thread_num)};
 }
 
 }  // namespace amcl_3d

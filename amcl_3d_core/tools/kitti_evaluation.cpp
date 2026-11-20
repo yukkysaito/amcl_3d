@@ -37,6 +37,7 @@
 #include "amcl_3d_core/localizer.hpp"
 #include "amcl_3d_core/map/map_factory.hpp"
 #include "amcl_3d_core/math.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/scan_filter.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "kitti_dataset.hpp"
@@ -184,7 +185,6 @@ int main(int argc, char ** argv)
   params.resampling.type =
     config.resampler == "kld" ? ResamplerType::kKld : ResamplerType::kSystematic;
   params.expansion_reset.enabled = config.expansion_reset;
-  params.point_cloud_measurement.thread_num = config.threads;
   params.motion_model.type = toMotionModelType(config.motion);
   params.motion_model.twist.thread_num = config.threads;
   params.motion_model.vehicle.thread_num = config.threads;
@@ -193,9 +193,11 @@ int main(int argc, char ** argv)
   map_params.type = toMapType(config.map_type);
   map_params.device = toMapDevice(config.device);
   map_params.resolution = config.map_resolution;
-  const auto point_cloud_map =
-    createPointCloudMap(map, map_params, params.point_cloud_measurement.max_distance);
-  localizer.setMap(point_cloud_map);
+  LikelihoodField::Params likelihood_params;
+  likelihood_params.thread_num = config.threads;
+  const auto likelihood = std::make_shared<LikelihoodField>(
+    createPointCloudMap(map, map_params, likelihood_params.max_distance), likelihood_params);
+  localizer.setPointCloudLikelihood(likelihood);
   if (config.scan_matching) {
     localizer.setScanMatcher(std::make_unique<NdtScanMatcher>(map, NdtScanMatcher::Params{}));
   }
@@ -305,7 +307,7 @@ int main(int argc, char ** argv)
     config.expansion_reset, static_cast<unsigned long>(config.seed));
   std::printf(
     "  map: %zu points, built in %.1f s, %s\n", map->size(), map_seconds,
-    point_cloud_map->description().c_str());
+    likelihood->description().c_str());
   std::printf(
     "  frames: %zu evaluated, lost (>1 m): %zu, refined by NDT: %zu\n",
     filter_errors.translation.size(), lost, refined_count);

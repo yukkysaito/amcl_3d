@@ -5,6 +5,7 @@
 
 #include "amcl_3d_core/localizer.hpp"
 #include "amcl_3d_core/map/map_factory.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 
@@ -29,7 +30,8 @@ struct NodeParams
   /// Take the angular velocity from the IMU instead of the odometry.
   bool use_imu;
 
-  /// Its distance range is point_cloud_measurement.max_distance.
+  /// Point cloud likelihood and the map it queries (distance range: its max_distance).
+  LikelihoodField::Params likelihood_field;
   MapParams map;
 
   struct GlobalLocalization
@@ -45,9 +47,14 @@ struct NodeParams
   } scan_matching;
 };
 
+struct Amcl3dParams
+{
+  LocalizerParams localizer;
+  NodeParams node;
+};
+
 /// Declares all parameters on `node` and returns their values. Throws std::invalid_argument for
 /// invalid values.
-LocalizerParams declareLocalizerParams(rclcpp::Node & node);
-NodeParams declareNodeParams(rclcpp::Node & node);
+Amcl3dParams declareParams(rclcpp::Node & node);
 
 }  // namespace amcl_3d

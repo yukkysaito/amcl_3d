@@ -6,6 +6,7 @@
 #include <optional>
 #include <stdexcept>
 
+#include "amcl_3d_core/measurement_model/point_cloud_measurement_model.hpp"
 #include "amcl_3d_core/measurement_model/pose_measurement_model.hpp"
 #include "amcl_3d_core/resampler/systematic_resampler.hpp"
 
@@ -78,16 +79,12 @@ void Localizer::setResampler(std::unique_ptr<Resampler> resampler)
   resampler_ = std::move(resampler);
 }
 
-void Localizer::setMap(std::shared_ptr<const PointCloudMap> map)
+void Localizer::setPointCloudLikelihood(std::shared_ptr<const PointCloudLikelihood> likelihood)
 {
-  if (!map) {
-    throw std::invalid_argument("Localizer: map is null");
+  if (!likelihood) {
+    throw std::invalid_argument("Localizer: point cloud likelihood is null");
   }
-  if (map->maxDistance() < params_.point_cloud_measurement.max_distance) {
-    throw std::invalid_argument(
-      "Localizer: the map distance range is shorter than point_cloud_measurement.max_distance");
-  }
-  map_ = std::move(map);
+  point_cloud_likelihood_ = std::move(likelihood);
 }
 
 void Localizer::initialize(const PoseWithCovariance & initial_pose, const Time & stamp)
@@ -168,20 +165,32 @@ LocalizerStatus Localizer::predict(const Time & stamp)
 
 // Measurements are validated before predict() so that a rejected one leaves the filter untouched.
 
+LocalizerStatus Localizer::update(const MeasurementModel & model, const Time & stamp)
+{
+  const LocalizerStatus status = predict(stamp);
+  if (status != LocalizerStatus::kOk) {
+    return status;
+  }
+  correct(model);
+  return LocalizerStatus::kOk;
+}
+
 LocalizerStatus Localizer::updateWithPointCloud(const PointCloud & scan, const Time & stamp)
 {
-  if (!hasMap()) {
+  if (!hasPointCloudLikelihood()) {
     return LocalizerStatus::kNoMap;
   }
   const std::vector<Eigen::Vector3d> points = scan_filter_.apply(scan);
   if (points.empty()) {
     return LocalizerStatus::kInvalidMeasurement;
   }
+  // Sample only after a successful predict(): sampling draws from the filter's random generator,
+  // which is part of the state a rejected measurement must leave untouched.
   const LocalizerStatus status = predict(stamp);
   if (status != LocalizerStatus::kOk) {
     return status;
   }
-  correct(PointCloudMeasurementModel(map_, samplePoints(points), params_.point_cloud_measurement));
+  correct(PointCloudMeasurementModel(point_cloud_likelihood_, samplePoints(points)));
   if (scan_matcher_) {
     refineByScanMatching(points);
   }
@@ -197,12 +206,7 @@ LocalizerStatus Localizer::updateWithPose(
   } catch (const std::invalid_argument &) {
     return LocalizerStatus::kInvalidMeasurement;
   }
-  const LocalizerStatus status = predict(stamp);
-  if (status != LocalizerStatus::kOk) {
-    return status;
-  }
-  correct(*model);
-  return LocalizerStatus::kOk;
+  return update(*model, stamp);
 }
 
 void Localizer::correct(const MeasurementModel & model)

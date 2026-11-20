@@ -7,10 +7,10 @@
 #include <utility>
 #include <vector>
 
-#include "amcl_3d_core/map/point_cloud_map.hpp"
-#include "amcl_3d_core/measurement_model/point_cloud_measurement_model.hpp"
+#include "amcl_3d_core/measurement_model/measurement_model.hpp"
 #include "amcl_3d_core/motion_model/motion_model_factory.hpp"
 #include "amcl_3d_core/particle_filter.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/point_cloud_likelihood.hpp"
 #include "amcl_3d_core/resampler/kld_resampler.hpp"
 #include "amcl_3d_core/scan_filter.hpp"
 #include "amcl_3d_core/scan_matcher/scan_matcher.hpp"
@@ -32,7 +32,6 @@ struct LocalizerParams
   /// Filtered scan points randomly selected per update. 0 uses all points.
   size_t scan_sample_num = 200;
   MotionModelParams motion_model;
-  PointCloudMeasurementModel::Params point_cloud_measurement;
 
   struct Resampling
   {
@@ -54,13 +53,14 @@ struct LocalizerParams
     Vector6d injection_stddev = (Vector6d() << 1.0, 1.0, 0.1, 0.05, 0.05, 0.5).finished();
   } augmented_mcl;
 
-  /// Expansion resetting (Ueda et al., emcl): when even the best particle explains the scan poorly
-  /// (per-point likelihood below the threshold), all particles are spread by `stddev` instead of
-  /// being resampled. Takes precedence over augmented MCL.
+  /// Expansion resetting (Ueda et al., emcl): when even the best particle explains a measurement
+  /// poorly (per-observation likelihood below the threshold), all particles are spread by `stddev`
+  /// instead of being resampled. Takes precedence over augmented MCL.
   struct ExpansionReset
   {
     bool enabled = false;
-    /// Per-point likelihood exp(-d^2 / (2 sigma^2)) averaged in the log domain.
+    /// Per-observation likelihood (see MeasurementModel), e.g. exp(-d^2 / (2 sigma^2)) averaged
+    /// over the points in the log domain for the likelihood field.
     double likelihood_threshold = 0.05;
     /// x, y, z [m], roll, pitch, yaw [rad]
     Vector6d stddev = (Vector6d() << 0.3, 0.3, 0.05, 0.01, 0.01, 0.1).finished();
@@ -85,18 +85,23 @@ enum class LocalizerStatus
 {
   kOk,
   kNotInitialized,
-  kNoMap,
+  kNoMap,               // no PointCloudLikelihood for a point cloud update
   kStaleStamp,          // older than the current filter time
   kInvalidMeasurement,  // e.g. empty scan, non positive definite covariance
 };
 const char * toString(LocalizerStatus status);
 
-/// Monte Carlo localization against a 3D point cloud map.
+/// Monte Carlo localization in a 3D map.
 ///
 /// Typical usage:
-///   setMap() -> initialize() -> { addTwist() at odometry rate, updateWithPointCloud() per scan }
+///   setPointCloudLikelihood() -> initialize() ->
+///     { addTwist() at odometry rate, updateWithPointCloud() per scan, update() per other sensor }
 /// Twists are buffered and integrated piecewise up to each measurement stamp, so odometry may
-/// arrive ahead of the (usually delayed) scans.
+/// arrive ahead of the (usually delayed) measurements.
+///
+/// Sensors plug in through MeasurementModel: update() fuses any measurement, so a new sensor
+/// (camera landmarks, GNSS, ...) needs a model of its measurement and no change here. Scans have
+/// a dedicated entry point because they share filtering, sampling and scan matching.
 class Localizer
 {
 public:
@@ -109,10 +114,10 @@ public:
   /// Enables refinement by scan matching (nullptr disables it).
   void setScanMatcher(std::unique_ptr<ScanMatcher> matcher) { scan_matcher_ = std::move(matcher); }
 
-  /// Throws std::invalid_argument if the map is null or its distance range is shorter than
-  /// point_cloud_measurement.max_distance.
-  void setMap(std::shared_ptr<const PointCloudMap> map);
-  bool hasMap() const { return map_ != nullptr; }
+  /// Sensor model of the scans of updateWithPointCloud(), which holds the map.
+  /// Throws std::invalid_argument if it is null.
+  void setPointCloudLikelihood(std::shared_ptr<const PointCloudLikelihood> likelihood);
+  bool hasPointCloudLikelihood() const { return point_cloud_likelihood_ != nullptr; }
 
   void initialize(const PoseWithCovariance & initial_pose, const Time & stamp);
   /// Initializes from an arbitrary distribution, e.g. GroundPoseSampler for global localization.
@@ -127,11 +132,16 @@ public:
   /// Moves the particles forward to `stamp` with the buffered twists.
   LocalizerStatus predict(const Time & stamp);
 
-  /// predict(stamp), then corrects with a scan given in the base frame, then resamples if needed,
-  /// then refines the estimate by scan matching if a ScanMatcher is set.
+  /// predict(stamp), then corrects the particles with `model`, then resamples (or resets) if
+  /// needed. The generic update of any sensor: build the model (validating the measurement) first,
+  /// so that an invalid measurement leaves the filter untouched.
+  LocalizerStatus update(const MeasurementModel & model, const Time & stamp);
+
+  /// Filters and samples a scan given in the base frame, then update() with the point cloud
+  /// likelihood, then refines the estimate by scan matching if a ScanMatcher is set.
   LocalizerStatus updateWithPointCloud(const PointCloud & scan, const Time & stamp);
 
-  /// predict(stamp), then corrects with an absolute pose observation (e.g. NDT, GNSS).
+  /// update() with an absolute pose observation (e.g. external scan matching, GNSS).
   LocalizerStatus updateWithPose(const PoseWithCovariance & observation, const Time & stamp);
 
   PoseWithCovariance estimate() const { return filter_.estimate(); }
@@ -161,7 +171,7 @@ private:
   GaussianPoseSampler injection_sampler_;
   GaussianPoseSampler expansion_sampler_;
   ScanFilter scan_filter_;
-  std::shared_ptr<const PointCloudMap> map_;
+  std::shared_ptr<const PointCloudLikelihood> point_cloud_likelihood_;
 
   bool initialized_ = false;
   Time stamp_;
