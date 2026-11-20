@@ -6,15 +6,20 @@
 
 namespace amcl_3d
 {
+void LikelihoodField::validate(const Params & params)
+{
+  if (!(params.sigma > 0.0) || !(params.max_distance > 0.0)) {
+    throw std::invalid_argument("LikelihoodField: sigma and max_distance must be positive");
+  }
+}
+
 LikelihoodField::LikelihoodField(std::shared_ptr<const PointCloudMap> map, const Params & params)
 : map_(std::move(map)), params_(params)
 {
   if (!map_) {
     throw std::invalid_argument("LikelihoodField: map is null");
   }
-  if (params_.sigma <= 0.0) {
-    throw std::invalid_argument("LikelihoodField: sigma must be positive");
-  }
+  validate(params_);
   if (map_->maxDistance() < params_.max_distance) {
     throw std::invalid_argument(
       "LikelihoodField: max_distance exceeds the distance range of the map");

@@ -77,23 +77,52 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
   p.use_imu = declare<bool>(
     node, "use_imu", false, "Use the IMU angular velocity instead of the odometry one");
 
-  const LikelihoodField::Params likelihood_defaults;
-  auto & likelihood = p.likelihood_field;
-  likelihood.thread_num = thread_num;
-  likelihood.max_distance = declare<double>(
-    node, "point_cloud_measurement.max_distance", likelihood_defaults.max_distance,
-    "Point-to-map distances are clipped here [m]");
-  likelihood.sigma = declare<double>(
-    node, "point_cloud_measurement.sigma", likelihood_defaults.sigma,
-    "Std dev of the point-to-map distance [m]");
+  const PointCloudLikelihoodParams likelihood_defaults;
+  auto & likelihood = p.point_cloud_likelihood;
+  likelihood.setThreadNum(thread_num);
+  likelihood.type = toPointCloudLikelihoodType(declare<std::string>(
+    node, "point_cloud_likelihood.type", "likelihood_field",
+    "'likelihood_field' (distance to the nearest map point) or 'ndt' (voxel normal distributions, "
+    "small map)"));
 
-  p.map.type = toMapType(declare<std::string>(
-    node, "map.type", "distance_field", "'distance_field' (fast) or 'kdtree' (exact, slow)"));
-  p.map.device = toMapDevice(declare<std::string>(
-    node, "map.device", "cpu", "'cpu' or 'cuda' (distance_field only, needs a CUDA build)"));
-  p.map.resolution =
-    declare<double>(node, "map.resolution", 0.2, "Voxel size of the distance field [m]");
-  validate(p.map);  // fail at startup, not when the map arrives
+  auto & field = likelihood.likelihood_field;
+  const auto & field_defaults = likelihood_defaults.likelihood_field;
+  field.model.max_distance = declare<double>(
+    node, "point_cloud_likelihood.likelihood_field.max_distance", field_defaults.model.max_distance,
+    "Point-to-map distances are clipped here [m]");
+  field.model.sigma = declare<double>(
+    node, "point_cloud_likelihood.likelihood_field.sigma", field_defaults.model.sigma,
+    "Std dev of the point-to-map distance [m]");
+  field.map.type = toMapType(declare<std::string>(
+    node, "point_cloud_likelihood.likelihood_field.map.type", "distance_field",
+    "'distance_field' (fast) or 'kdtree' (exact, slow)"));
+  field.map.device = toMapDevice(declare<std::string>(
+    node, "point_cloud_likelihood.likelihood_field.map.device", "cpu",
+    "'cpu' or 'cuda' (distance_field only, needs a CUDA build)"));
+  field.map.resolution = declare<double>(
+    node, "point_cloud_likelihood.likelihood_field.map.resolution", field_defaults.map.resolution,
+    "Voxel size of the distance field [m]");
+
+  auto & ndt = likelihood.ndt;
+  const auto & ndt_likelihood_defaults = likelihood_defaults.ndt;
+  ndt.map.resolution = declare<double>(
+    node, "point_cloud_likelihood.ndt.resolution", ndt_likelihood_defaults.map.resolution,
+    "Voxel size of the normal distributions [m]");
+  ndt.map.min_point_num = declareCount(
+    node, "point_cloud_likelihood.ndt.min_point_num", ndt_likelihood_defaults.map.min_point_num,
+    "Voxels with fewer map points are dropped");
+  ndt.model.sigma = declare<double>(
+    node, "point_cloud_likelihood.ndt.sigma", ndt_likelihood_defaults.model.sigma,
+    "Measurement noise added to every distribution [m]");
+  ndt.model.max_mahalanobis_distance = declare<double>(
+    node, "point_cloud_likelihood.ndt.max_mahalanobis_distance",
+    ndt_likelihood_defaults.model.max_mahalanobis_distance,
+    "Per-point clipping of the Mahalanobis distance [std dev]");
+  ndt.model.search_neighbors = declare<bool>(
+    node, "point_cloud_likelihood.ndt.search_neighbors",
+    ndt_likelihood_defaults.model.search_neighbors,
+    "Also score with the 6 face-neighboring voxels (wider basin, more accurate)");
+  validate(likelihood);  // fail at startup, not when the map arrives
 
   p.global_localization.particle_num = declareCount(
     node, "global_localization.particle_num", 20000, "Particles drawn over the whole map");

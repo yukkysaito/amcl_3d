@@ -13,7 +13,9 @@
 //   twist is reported as a baseline.
 // - The filter is initialized off the ground truth by `init_offset` [m] and `init_yaw_offset`.
 //
-// Options (defaults in Config): map=distance_field|kdtree device=cpu|cuda resolution=<m>
+// Options (defaults in Config): likelihood=likelihood_field|ndt sigma=<m>
+// map=distance_field|kdtree device=cpu|cuda resolution=<m> (likelihood field)
+// ndt_resolution=<m> ndt_neighbors=0|1 (NDT)
 // threads=<n> motion=twist|vehicle odometry=full|wheel base_x=<m> base_pitch=<rad>
 // resampler=systematic|kld
 // particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n> frames=<n>
@@ -35,9 +37,8 @@
 #include <pcl/common/transforms.h>
 
 #include "amcl_3d_core/localizer.hpp"
-#include "amcl_3d_core/map/map_factory.hpp"
 #include "amcl_3d_core/math.hpp"
-#include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/point_cloud_likelihood_factory.hpp"
 #include "amcl_3d_core/scan_filter.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "kitti_dataset.hpp"
@@ -54,6 +55,10 @@ namespace
 
 struct Config
 {
+  std::string likelihood = "likelihood_field";
+  double sigma = 0.2;  // [m] of the selected likelihood
+  double ndt_resolution = 1.0;
+  bool ndt_neighbors = true;
   std::string map_type = "distance_field";
   std::string device = "cpu";  // cuda: likelihood of the distance field on the GPU
   double map_resolution = 0.2;
@@ -108,6 +113,10 @@ Config parseConfig(int argc, char ** argv)
     stream >> value;
     kv.erase(it);
   };
+  take("likelihood", c.likelihood);
+  take("sigma", c.sigma);
+  take("ndt_resolution", c.ndt_resolution);
+  take("ndt_neighbors", c.ndt_neighbors);
   take("map", c.map_type);
   take("resolution", c.map_resolution);
   take("threads", c.threads);
@@ -189,14 +198,19 @@ int main(int argc, char ** argv)
   params.motion_model.twist.thread_num = config.threads;
   params.motion_model.vehicle.thread_num = config.threads;
   Localizer localizer(params);
-  MapParams map_params;
-  map_params.type = toMapType(config.map_type);
-  map_params.device = toMapDevice(config.device);
-  map_params.resolution = config.map_resolution;
-  LikelihoodField::Params likelihood_params;
-  likelihood_params.thread_num = config.threads;
-  const auto likelihood = std::make_shared<LikelihoodField>(
-    createPointCloudMap(map, map_params, likelihood_params.max_distance), likelihood_params);
+  PointCloudLikelihoodParams likelihood_params;
+  likelihood_params.type = toPointCloudLikelihoodType(config.likelihood);
+  likelihood_params.setThreadNum(config.threads);
+  auto & field = likelihood_params.likelihood_field;
+  field.map.type = toMapType(config.map_type);
+  field.map.device = toMapDevice(config.device);
+  field.map.resolution = config.map_resolution;
+  field.model.sigma = config.sigma;
+  auto & ndt = likelihood_params.ndt;
+  ndt.map.resolution = config.ndt_resolution;
+  ndt.model.sigma = config.sigma;
+  ndt.model.search_neighbors = config.ndt_neighbors;
+  const auto likelihood = createPointCloudLikelihood(map, likelihood_params);
   localizer.setPointCloudLikelihood(likelihood);
   if (config.scan_matching) {
     localizer.setScanMatcher(std::make_unique<NdtScanMatcher>(map, NdtScanMatcher::Params{}));

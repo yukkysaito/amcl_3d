@@ -7,15 +7,6 @@
 
     # map: load a PCD file at startup, or leave empty to subscribe to the "map" topic
     map_pcd_file: ""
-    map:
-      # distance_field: precomputed nearest map points, ~12x faster updates than kdtree with the
-      #   same accuracy on KITTI 07 (see README); memory ~0.3 MB per meter of route at 0.2 m
-      # kdtree: exact nearest neighbor search, slow (~24 ms per update with the defaults)
-      type: distance_field
-      resolution: 0.2  # [m] distance_field voxel size
-      # cpu, or cuda: likelihood of the distance_field on the GPU (build amcl_3d_core with
-      #   --cmake-args -DAMCL3D_USE_CUDA=ON); worth it with many particles (see README)
-      device: cpu
 
     use_imu: false  # take the angular velocity from the "imu" topic instead of the odometry
 
@@ -64,9 +55,30 @@
       max_z: 100.0      # [m]
       voxel_size: 0.5   # [m] uniform density; 0 disables
 
-    point_cloud_measurement:
-      max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
-      sigma: 0.2         # [m]
+    # how well a scan fits the map at each particle (see README, Evaluation)
+    point_cloud_likelihood:
+      # likelihood_field: distance from each point to the nearest map point; most accurate
+      # ndt: Mahalanobis distance to the normal distribution of the map points in each voxel;
+      #   ~10x less memory than the distance field, ~15 % more error on KITTI 07
+      type: likelihood_field
+      likelihood_field:
+        max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
+        sigma: 0.2         # [m]
+        map:
+          # distance_field: precomputed nearest map points, ~12x faster updates than kdtree with
+          #   the same accuracy on KITTI 07; memory ~0.3 MB per meter of route at 0.2 m
+          # kdtree: exact nearest neighbor search, slow (~24 ms per update with the defaults)
+          type: distance_field
+          resolution: 0.2  # [m] distance_field voxel size
+          # cpu, or cuda: likelihood of the distance_field on the GPU (build amcl_3d_core with
+          #   --cmake-args -DAMCL3D_USE_CUDA=ON); worth it with many particles
+          device: cpu
+      ndt:
+        resolution: 1.0                # [m] voxel size
+        min_point_num: 6               # voxels with fewer map points are dropped
+        sigma: 0.2                     # [m] measurement noise added to every distribution
+        max_mahalanobis_distance: 5.0  # per-point clipping [std dev]
+        search_neighbors: true         # also score with the 6 face neighbors (wider basin)
 
     resampling:
       type: systematic          # systematic | kld
@@ -82,7 +94,7 @@
     # spread all particles when even the best particle explains the scan poorly (emcl)
     expansion_reset:
       enabled: false
-      likelihood_threshold: 0.05  # per-point likelihood exp(-d^2 / (2 sigma^2)) of the best particle
+      likelihood_threshold: 0.05  # per-point likelihood of the best particle, e.g. exp(-d^2 / (2 sigma^2))
       stddev: [0.3, 0.3, 0.05, 0.01, 0.01, 0.1]  # x, y, z [m], roll, pitch, yaw [rad]
 
     # ~/global_localization service (std_srvs/Trigger); use resampling.type: kld with it

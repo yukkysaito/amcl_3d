@@ -36,6 +36,7 @@ add_library(${PROJECT_NAME} SHARED
   src/localizer.cpp
   src/map/cuda_distance_field_map.cpp
   src/map/distance_field_map.cpp
+  src/map/gaussian_voxel_map.cpp
   src/map/kdtree_map.cpp
   src/map/map_factory.cpp
   src/map/point_cloud_map.cpp
@@ -48,6 +49,8 @@ add_library(${PROJECT_NAME} SHARED
   src/particle_filter.cpp
   src/particle_set.cpp
   src/point_cloud_likelihood/likelihood_field.cpp
+  src/point_cloud_likelihood/ndt_likelihood.cpp
+  src/point_cloud_likelihood/point_cloud_likelihood_factory.cpp
   src/random.cpp
   src/resampler/kld_resampler.cpp
   src/resampler/systematic_resampler.cpp

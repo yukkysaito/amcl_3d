@@ -86,10 +86,7 @@ std::optional<Eigen::Isometry3d> Amcl3dNode::lookupTransform(
 void Amcl3dNode::setMap(const PointCloud::Ptr & map)
 {
   try {
-    const auto & likelihood_params = params_.node.likelihood_field;
-    const auto likelihood = std::make_shared<LikelihoodField>(
-      createPointCloudMap(map, params_.node.map, likelihood_params.max_distance),
-      likelihood_params);
+    const auto likelihood = createPointCloudLikelihood(map, params_.node.point_cloud_likelihood);
     RCLCPP_INFO(get_logger(), "%s", likelihood->description().c_str());
     localizer_->setPointCloudLikelihood(likelihood);
     global_sampler_ =

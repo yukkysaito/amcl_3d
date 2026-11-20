@@ -119,7 +119,7 @@ protected:
     std::vector<rclcpp::Parameter> all = {
       // The synthetic map is grid aligned with 0.1 m spacing, which aliases with coarser
       // distance field voxels (not an issue on real data, see the KITTI evaluation in the README).
-      {"map.resolution", 0.1},
+      {"point_cloud_likelihood.likelihood_field.map.resolution", 0.1},
       {"random_seed", 1},
       {"initial_particle_num", 300},
       {"scan_sample_num", 200},
@@ -277,15 +277,33 @@ TEST_F(Amcl3dNodeTest, ScanMatchingRefinesPublishedPose)
   EXPECT_LT(orientationError(), 0.5 * M_PI / 180.0);
 }
 
+TEST_F(Amcl3dNodeTest, LocalizesWithNdtLikelihood)
+{
+  start({{"point_cloud_likelihood.type", "ndt"}});
+  publishInitialPose();
+  publishScans(30);
+  EXPECT_LT(positionError(), 0.1);
+  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
+}
+
+TEST_F(Amcl3dNodeTest, RejectsUnknownLikelihoodAtStartup)
+{
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({{"point_cloud_likelihood.type", "icp"}});
+  EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);
+}
+
 TEST_F(Amcl3dNodeTest, LocalizesWithCuda)
 {
   if (!CudaDistanceFieldMap::available()) {
     rclcpp::NodeOptions options;
-    options.parameter_overrides({{"map.device", "cuda"}});
+    options.parameter_overrides({{"point_cloud_likelihood.likelihood_field.map.device", "cuda"}});
     EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);  // reported at startup
     GTEST_SKIP() << "no CUDA device (or built without CUDA)";
   }
-  start({{"map.device", "cuda"}, {"initial_particle_num", 3000}});
+  start(
+    {{"point_cloud_likelihood.likelihood_field.map.device", "cuda"},
+     {"initial_particle_num", 3000}});
   publishInitialPose();
   publishScans(30);
   EXPECT_LT(positionError(), 0.1);

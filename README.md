@@ -36,9 +36,9 @@ With the CUDA toolkit (tested with 12.8), the likelihood of the distance field c
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DAMCL3D_USE_CUDA=ON
 ```
 
-then set `map.device: cuda`. `CMAKE_CUDA_ARCHITECTURES` defaults to the GPU of the build machine
+then set `point_cloud_likelihood.likelihood_field.map.device: cuda`. `CMAKE_CUDA_ARCHITECTURES` defaults to the GPU of the build machine
 (`native`); set it explicitly (e.g. `"86;89"`) when building elsewhere. Without CUDA, the node
-reports `map.device: cuda` as an error at startup.
+reports the `cuda` device as an error at startup.
 
 ## Run
 
@@ -75,12 +75,17 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
   - `vehicle`: car-like motion (forward speed and yaw rate, base frame at the rear axle) with
     anisotropic noise growing with the speed; 25-30 % lower translation and 35 % lower yaw
     error than `twist` on KITTI with wheel-like odometry (see Evaluation)
-- **Correction**: point-to-map distance likelihood with clipping, on
-  - `distance_field` (default): precomputed sparse field of nearest map points, ~12x faster
-    updates than `kdtree` with the same accuracy on KITTI (see Evaluation), or
-  - `kdtree`: exact nearest neighbor search
+- **Correction** by a scan likelihood (`point_cloud_likelihood.type`), robust to points not in
+  the map by clipping:
+  - `likelihood_field` (default): distance from each point to the nearest map point, on
+    - `distance_field` (default): precomputed sparse field of nearest map points, ~12x faster
+      updates than `kdtree` with the same accuracy on KITTI (see Evaluation), or
+    - `kdtree`: exact nearest neighbor search
+  - `ndt`: Mahalanobis distance to the normal distributions of the map points in 1 m voxels;
+    a 10x smaller map than the distance field, at 15 % more error on KITTI
   - particles are evaluated in parallel on `thread_num` CPU threads (OpenMP), or on a CUDA
-    GPU (`map.device: cuda`), which affords 10-100x more particles
+    GPU (`device: cuda`, likelihood field), which affords 10-100x more particles
+- **Other sensors** plug in as a `MeasurementModel` fused by `Localizer::update()` (see Design)
 - **Scan preprocessing**: range / height crop, voxel grid, random subsampling
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
 - **Recovery**: augmented MCL, expansion resetting, global localization
@@ -97,15 +102,17 @@ Localizer                      time handling, resampling policy, recovery, refin
  ├─ MeasurementModel           one measurement of any sensor, fused by Localizer::update()
  │   ├─ PoseMeasurementModel   absolute pose (external scan matching, GNSS)
  │   └─ PointCloudMeasurementModel
- │       └─ PointCloudLikelihood   sensor model of scans: LikelihoodField
- │           └─ PointCloudMap      KdTreeMap, DistanceFieldMap, CudaDistanceFieldMap
- │                                 (batched query over particles x points: OpenMP or GPU)
+ │       └─ PointCloudLikelihood   sensor model of scans
+ │           ├─ LikelihoodField    on PointCloudMap: KdTreeMap, DistanceFieldMap,
+ │           │                     CudaDistanceFieldMap (batched over particles x points)
+ │           └─ NdtLikelihood      on GaussianVoxelMap
  ├─ Resampler                  SystematicResampler, KldResampler
  ├─ ScanFilter
  └─ ScanMatcher                NdtScanMatcher
 PoseSampler                    GaussianPoseSampler, GroundPoseSampler (global localization)
 createMotionModel()            builds the MotionModel selected by MotionModelParams
-createPointCloudMap()          builds the PointCloudMap selected by MapParams (type, device)
+createPointCloudLikelihood()   builds the likelihood and its map selected by
+                               PointCloudLikelihoodParams (type, map type, device)
 ```
 
 The extension points are interfaces with a factory where a parameter selects the implementation:
@@ -115,8 +122,9 @@ The extension points are interfaces with a factory where a parameter selects the
   fuses it with the prediction, resampling and recovery shared by all sensors; the localizer
   needs no change. Long-lived state (a landmark map, camera intrinsics and extrinsics) belongs to a
   sensor model shared by the measurement instances, as `PointCloudLikelihood` is for scans.
-- **A new scan likelihood** (NDT, GICP, ...) implements `PointCloudLikelihood`, which owns the map
-  representation it needs (distance field, voxel Gaussians, ...).
+- **A new scan likelihood** (e.g. GICP) implements `PointCloudLikelihood`, which owns the map
+  representation it needs (distance field, voxel Gaussians, ...), and is added to
+  `createPointCloudLikelihood()`.
 - **A new map backend** for the likelihood field implements `PointCloudMap` and is added to
   `createPointCloudMap()`; a new motion model implements `MotionModel` and is added to
   `createMotionModel()`.
@@ -174,6 +182,26 @@ Using every hardware thread (`thread_num: 0`, 32 threads) was slower than 4-16 t
 (6.2 ms): idle OpenMP threads spin on the cores the rest of the update runs on. Setting
 `OMP_WAIT_POLICY=passive` avoids that.
 
+### Scan likelihoods
+
+Same protocol and defaults (500 particles), 3 seeds:
+
+| `point_cloud_likelihood.type` | translation RMSE [m] | yaw RMSE [deg] | max [m] | update mean / p95 [ms] | map memory |
+|---|---|---|---|---|---|
+| `likelihood_field` (distance field 0.2 m, default) | **0.153-0.158** | **0.20-0.21** | 0.49 | **1.8 / 2.2** | 227 MB |
+| `ndt` (1 m, 7 voxels, default) | 0.177-0.181 | 0.21-0.22 | 0.50 | 2.7 / 3.0 | **20 MB** |
+| `ndt` (1 m, `search_neighbors: false`) | 0.199-0.202 | 0.23-0.24 | 0.66 | 1.7 / 2.1 | 15 MB |
+
+NDT trades 15 % of accuracy for a 10x smaller map, whose size depends on the mapped surface rather
+than on the volume around it. Other NDT settings were less accurate: 0.5 m voxels 0.183, 2 m
+0.193, `sigma` 0.1 0.188 and 0.3 0.185 (seed 1). Scoring with the face-neighboring voxels widens
+the basin beyond one voxel and removes the jumps at voxel boundaries; precomputing the candidate
+voxels of each cell keeps it at one hash lookup per point.
+
+```bash
+./kitti_evaluation <kitti>/dataset 07 likelihood=ndt
+```
+
 ### Motion models
 
 Same protocol, but with odometry like a car provides it (forward speed and yaw rate only,
@@ -224,7 +252,7 @@ single precision; sums agree with the CPU to rounding except for rare points on 
 ## Limitations
 
 - Memory of the distance field grows with the mapped area (~0.3 MB per meter of route at 0.2 m);
-  very large maps need tiling (not implemented).
+  very large maps need `ndt` (~0.03 MB per meter) or tiling (not implemented).
 - With KLD sampling the particle count shrinks to `min_particle_num`, which costs accuracy
   (see Evaluation); raise it if accuracy matters more than computation.
 - Global localization assumes a ground vehicle (single ground level) and can lock onto a wrong
