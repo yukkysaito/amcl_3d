@@ -129,8 +129,11 @@ void Amcl3dNode::onInitialPose(
     RCLCPP_WARN(get_logger(), "initial pose has no covariance, using default_initial_pose_stddev");
     initial_pose.covariance = params_.node.default_initial_pose_stddev.cwiseAbs2().asDiagonal();
   }
-  const rclcpp::Time stamp =
-    rclcpp::Time(msg->header.stamp).nanoseconds() == 0 ? now() : rclcpp::Time(msg->header.stamp);
+  // RViz stamps with its own clock, which may not be the node's (use_sim_time)
+  rclcpp::Time stamp(msg->header.stamp, get_clock()->get_clock_type());
+  if (stamp.nanoseconds() == 0 || isAhead(stamp)) {
+    stamp = now();
+  }
   localizer_->initialize(initial_pose, Time{stamp.nanoseconds()});
   reported_expansion_resets_ = 0;
 
@@ -168,8 +171,24 @@ void Amcl3dNode::onGlobalLocalization(
   publishEstimate(stamp);
 }
 
+bool Amcl3dNode::isAhead(const rclcpp::Time & stamp)
+{
+  const rclcpp::Time clock = now();
+  if ((stamp - clock).seconds() <= params_.node.max_stamp_lead) {
+    return false;
+  }
+  RCLCPP_WARN_THROTTLE(
+    get_logger(), *get_clock(), kThrottleMs,
+    "input stamped %.3f s ahead of the clock (max_stamp_lead %.3f s): another time source?",
+    (stamp - clock).seconds(), params_.node.max_stamp_lead);
+  return true;
+}
+
 void Amcl3dNode::addTwist(const Twist & twist, const builtin_interfaces::msg::Time & stamp)
 {
+  if (isAhead(rclcpp::Time(stamp, get_clock()->get_clock_type()))) {
+    return;
+  }
   if (!localizer_->addTwist(twist, fromMsg(stamp))) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), kThrottleMs,
@@ -222,7 +241,18 @@ void Amcl3dNode::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPt
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), kThrottleMs, "waiting for the initial pose");
     return;
   }
-  const rclcpp::Time stamp(msg->header.stamp);
+  const rclcpp::Time stamp(msg->header.stamp, get_clock()->get_clock_type());
+  if (isAhead(stamp)) {
+    return;
+  }
+  if (localizer_->stamp().seconds() - stamp.seconds() > params_.node.time_jump_threshold) {
+    // Time jumped back (looping rosbag, restarted simulation): every scan would be stale.
+    const PoseWithCovariance estimate = localizer_->estimate();
+    RCLCPP_WARN(
+      get_logger(), "time jumped back by %.1f s, restarting at the estimate",
+      localizer_->stamp().seconds() - stamp.seconds());
+    localizer_->initialize(estimate, fromMsg(msg->header.stamp));
+  }
   const auto base_from_sensor =
     lookupTransform(params_.node.base_frame_id, msg->header.frame_id, stamp);
   if (!base_from_sensor) {

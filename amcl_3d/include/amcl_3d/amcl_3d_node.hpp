@@ -59,6 +59,8 @@ private:
   /// sampler and the scan matcher.
   void setMap(const PointCloud::Ptr & map);
   void addTwist(const Twist & twist, const builtin_interfaces::msg::Time & stamp);
+  /// Whether `stamp` is more than max_stamp_lead ahead of the node clock (warns if so).
+  bool isAhead(const rclcpp::Time & stamp);
   void publishEstimate(const rclcpp::Time & stamp);
   void publishMapToOdom(const rclcpp::Time & stamp, const Pose & base_in_map);
 
