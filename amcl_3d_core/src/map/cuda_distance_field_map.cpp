@@ -11,8 +11,17 @@ namespace amcl_3d
 {
 namespace
 {
-/// Dense grid of block indices over the bounding box of the field's blocks.
-std::pair<cuda::FieldLayout, std::vector<int32_t>> makeLayout(const DistanceFieldMap & field)
+struct DeviceLayout
+{
+  cuda::FieldLayout layout;
+  std::vector<int32_t> lookup;
+  Eigen::Vector3d origin;  // world position of the corner of lookup[0]
+};
+
+/// Dense grid of block indices over the bounding box of the field's blocks. The device works
+/// relative to the corner of that grid, near zero, where single precision stays fine even for maps
+/// in projected coordinates (5e5 m is a 0.06 m float step).
+DeviceLayout makeLayout(const DistanceFieldMap & field)
 {
   const std::vector<Eigen::Vector3i> blocks = field.blockCoordinates();
   Eigen::Vector3i min_block = blocks.front();
@@ -28,7 +37,6 @@ std::pair<cuda::FieldLayout, std::vector<int32_t>> makeLayout(const DistanceFiel
   layout.offset_scale = static_cast<float>(field.offsetScale());
   layout.block_size = field.blockSize();
   for (int axis = 0; axis < 3; ++axis) {
-    layout.block_min[axis] = min_block[axis];
     layout.block_dims[axis] = dims[axis];
   }
   std::vector<int32_t> lookup(static_cast<size_t>(dims.x()) * dims.y() * dims.z(), -1);
@@ -37,7 +45,9 @@ std::pair<cuda::FieldLayout, std::vector<int32_t>> makeLayout(const DistanceFiel
     lookup[(static_cast<size_t>(g.z()) * dims.y() + g.y()) * dims.x() + g.x()] =
       static_cast<int32_t>(i);
   }
-  return {layout, std::move(lookup)};
+  const Eigen::Vector3d origin =
+    min_block.cast<double>() * (field.blockSize() * field.params().resolution);
+  return {layout, std::move(lookup), origin};
 }
 }  // namespace
 
@@ -48,9 +58,10 @@ CudaDistanceFieldMap::CudaDistanceFieldMap(
   if (!field_) {
     throw std::invalid_argument("CudaDistanceFieldMap: field is null");
   }
-  const auto [layout, lookup] = makeLayout(*field_);
-  device_field_ =
-    std::make_unique<cuda::DeviceDistanceField>(device, layout, field_->siteOffsets(), lookup);
+  const DeviceLayout layout = makeLayout(*field_);
+  origin_ = layout.origin;
+  device_field_ = std::make_unique<cuda::DeviceDistanceField>(
+    device, layout.layout, field_->siteOffsets(), layout.lookup);
 }
 
 CudaDistanceFieldMap::~CudaDistanceFieldMap() = default;
@@ -71,7 +82,8 @@ Eigen::VectorXd CudaDistanceFieldMap::sumClippedSquaredDistances(
     Eigen::Map<RowMajorMatrix3f> rotation(transforms[i].rotation);
     Eigen::Map<Eigen::Vector3f> translation(transforms[i].translation);
     rotation = pose.orientation.toRotationMatrix().cast<float>();
-    translation = pose.position.cast<float>();
+    // the device works relative to origin_: subtract it in double precision
+    translation = (pose.position - origin_).cast<float>();
   }
   std::vector<float> flat_points(points.size() * 3);
   for (size_t k = 0; k < points.size(); ++k) {
