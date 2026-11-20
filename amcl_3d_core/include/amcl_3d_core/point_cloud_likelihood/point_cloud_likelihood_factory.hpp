@@ -5,6 +5,7 @@
 
 #include "amcl_3d_core/map/gaussian_voxel_map.hpp"
 #include "amcl_3d_core/map/map_factory.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/gicp_likelihood.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/ndt_likelihood.hpp"
 #include "amcl_3d_core/types.hpp"
@@ -20,6 +21,7 @@ struct PointCloudLikelihoodParams
   {
     kLikelihoodField,  // distance to the nearest map point (distance field, k-d tree, CUDA)
     kNdt,              // Mahalanobis distance to the normal distributions of the voxels
+    kGicp,             // as kNdt, with the local covariance of the scan (plane-to-plane)
   };
   Type type = Type::kLikelihoodField;
 
@@ -35,11 +37,17 @@ struct PointCloudLikelihoodParams
     NdtLikelihood::Params model;
   } ndt;
 
+  struct GicpParams
+  {
+    GaussianVoxelMap::Params map;
+    GicpLikelihood::Params model;
+  } gicp;
+
   /// Sets the CPU threads of every model.
   void setThreadNum(size_t thread_num);
 };
 
-/// Parses "likelihood_field" or "ndt". Throws std::invalid_argument for unknown names.
+/// Parses "likelihood_field", "ndt" or "gicp". Throws std::invalid_argument for unknown names.
 PointCloudLikelihoodParams::Type toPointCloudLikelihoodType(const std::string & name);
 
 /// Throws std::invalid_argument for invalid parameters of the selected type, checked before the

@@ -83,6 +83,8 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
     - `kdtree`: exact nearest neighbor search
   - `ndt`: Mahalanobis distance to the normal distributions of the map points in 1 m voxels;
     a 10x smaller map than the distance field, at 15 % more error on KITTI
+  - `gicp`: `ndt` plus the local covariance of the scan around each point (voxelized GICP,
+    plane-to-plane); no gain over `ndt` on KITTI, available for other sensors and maps
   - particles are evaluated in parallel on `thread_num` CPU threads (OpenMP), or on a CUDA
     GPU (`device: cuda`, likelihood field), which affords 10-100x more particles
 - **Other sensors** plug in as a `MeasurementModel` fused by `Localizer::update()` (see Design)
@@ -105,7 +107,8 @@ Localizer                      time handling, resampling policy, recovery, refin
  │       └─ PointCloudLikelihood   sensor model of scans
  │           ├─ LikelihoodField    on PointCloudMap: KdTreeMap, DistanceFieldMap,
  │           │                     CudaDistanceFieldMap (batched over particles x points)
- │           └─ NdtLikelihood      on GaussianVoxelMap
+ │           ├─ NdtLikelihood      on GaussianVoxelMap
+ │           └─ GicpLikelihood     on GaussianVoxelMap, with scan covariances
  ├─ Resampler                  SystematicResampler, KldResampler
  ├─ ScanFilter
  └─ ScanMatcher                NdtScanMatcher
@@ -122,9 +125,11 @@ The extension points are interfaces with a factory where a parameter selects the
   fuses it with the prediction, resampling and recovery shared by all sensors; the localizer
   needs no change. Long-lived state (a landmark map, camera intrinsics and extrinsics) belongs to a
   sensor model shared by the measurement instances, as `PointCloudLikelihood` is for scans.
-- **A new scan likelihood** (e.g. GICP) implements `PointCloudLikelihood`, which owns the map
-  representation it needs (distance field, voxel Gaussians, ...), and is added to
-  `createPointCloudLikelihood()`.
+- **A new scan likelihood** implements `PointCloudLikelihood`, which owns the map representation
+  it needs (distance field, voxel Gaussians, ...), and is added to `createPointCloudLikelihood()`.
+  The localizer hands it the whole filtered scan with the sampled points
+  (`createMeasurementModel()`), so that per-scan features such as the covariances of GICP are
+  computed once per scan.
 - **A new map backend** for the likelihood field implements `PointCloudMap` and is added to
   `createPointCloudMap()`; a new motion model implements `MotionModel` and is added to
   `createMotionModel()`.
@@ -191,12 +196,19 @@ Same protocol and defaults (500 particles), 3 seeds:
 | `likelihood_field` (distance field 0.2 m, default) | **0.153-0.158** | **0.20-0.21** | 0.49 | **1.8 / 2.2** | 227 MB |
 | `ndt` (1 m, 7 voxels, default) | 0.177-0.181 | 0.21-0.22 | 0.50 | 2.7 / 3.0 | **20 MB** |
 | `ndt` (1 m, `search_neighbors: false`) | 0.199-0.202 | 0.23-0.24 | 0.66 | 1.7 / 2.1 | 15 MB |
+| `gicp` (1 m, 7 voxels, 10 neighbors) | 0.187-0.192 | 0.21-0.23 | 0.62 | 4.0 / 4.6 | 20 MB |
 
 NDT trades 15 % of accuracy for a 10x smaller map, whose size depends on the mapped surface rather
 than on the volume around it. Other NDT settings were less accurate: 0.5 m voxels 0.183, 2 m
 0.193, `sigma` 0.1 0.188 and 0.3 0.185 (seed 1). Scoring with the face-neighboring voxels widens
 the basin beyond one voxel and removes the jumps at voxel boundaries; precomputing the candidate
 voxels of each cell keeps it at one hash lookup per point.
+
+GICP did not improve on NDT here. Adding the scan covariance (from the 10 nearest points of the
+0.5 m filtered scan) widens each pair of distributions and blurs the score; Segal-style
+plane-ized covariances, 0.5 m voxels and `sigma` 0.05-0.1 all stayed at 0.185-0.199 (seed 1),
+and with zero scan covariances it reduces to NDT exactly (0.177). It may pay off with denser
+scans or finer maps, which this benchmark does not cover.
 
 ```bash
 ./kitti_evaluation <kitti>/dataset 07 likelihood=ndt

@@ -6,7 +6,6 @@
 #include <optional>
 #include <stdexcept>
 
-#include "amcl_3d_core/measurement_model/point_cloud_measurement_model.hpp"
 #include "amcl_3d_core/measurement_model/pose_measurement_model.hpp"
 #include "amcl_3d_core/resampler/systematic_resampler.hpp"
 
@@ -190,7 +189,7 @@ LocalizerStatus Localizer::updateWithPointCloud(const PointCloud & scan, const T
   if (status != LocalizerStatus::kOk) {
     return status;
   }
-  correct(PointCloudMeasurementModel(point_cloud_likelihood_, samplePoints(points)));
+  correct(*point_cloud_likelihood_->createMeasurementModel(points, samplePoints(points)));
   if (scan_matcher_) {
     refineByScanMatching(points);
   }

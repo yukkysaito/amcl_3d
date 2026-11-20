@@ -48,8 +48,10 @@ add_library(${PROJECT_NAME} SHARED
   src/motion_model/vehicle_motion_model.cpp
   src/particle_filter.cpp
   src/particle_set.cpp
+  src/point_cloud_likelihood/gicp_likelihood.cpp
   src/point_cloud_likelihood/likelihood_field.cpp
   src/point_cloud_likelihood/ndt_likelihood.cpp
+  src/point_cloud_likelihood/point_cloud_likelihood.cpp
   src/point_cloud_likelihood/point_cloud_likelihood_factory.cpp
   src/random.cpp
   src/resampler/kld_resampler.cpp

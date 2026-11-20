@@ -60,6 +60,8 @@
       # likelihood_field: distance from each point to the nearest map point; most accurate
       # ndt: Mahalanobis distance to the normal distribution of the map points in each voxel;
       #   ~10x less memory than the distance field, ~15 % more error on KITTI 07
+      # gicp: ndt plus the local covariance of the scan (voxelized GICP); no gain over ndt on
+      #   KITTI 07, provided for other sensors and maps
       type: likelihood_field
       likelihood_field:
         max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
@@ -78,7 +80,14 @@
         min_point_num: 6               # voxels with fewer map points are dropped
         sigma: 0.2                     # [m] measurement noise added to every distribution
         max_mahalanobis_distance: 5.0  # per-point clipping [std dev]
-        search_neighbors: true         # also score with the 6 face neighbors (wider basin)
+        search_neighbors: true         # also match with the 6 face neighbors (wider basin)
+      gicp:
+        resolution: 1.0                # [m] voxel size of the map distributions
+        min_point_num: 6
+        search_neighbors: true
+        sigma: 0.2                     # [m] measurement noise added to every pair
+        max_mahalanobis_distance: 5.0  # per-point clipping [std dev]
+        neighbor_num: 10               # scan points per scan covariance
 
     resampling:
       type: systematic          # systematic | kld

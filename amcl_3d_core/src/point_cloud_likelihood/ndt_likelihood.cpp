@@ -2,8 +2,6 @@
 
 #include <Eigen/Cholesky>
 #include <algorithm>
-#include <array>
-#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -12,15 +10,6 @@
 
 namespace amcl_3d
 {
-namespace
-{
-const std::array<Eigen::Vector3i, 7> kNeighborOffsets{
-  Eigen::Vector3i(0, 0, 0),  Eigen::Vector3i(1, 0, 0),  Eigen::Vector3i(-1, 0, 0),
-  Eigen::Vector3i(0, 1, 0),  Eigen::Vector3i(0, -1, 0), Eigen::Vector3i(0, 0, 1),
-  Eigen::Vector3i(0, 0, -1),
-};
-}  // namespace
-
 void NdtLikelihood::validate(const Params & params)
 {
   if (!(params.sigma > 0.0) || !(params.max_mahalanobis_distance > 0.0)) {
@@ -44,37 +33,13 @@ NdtLikelihood::NdtLikelihood(std::shared_ptr<const GaussianVoxelMap> map, const 
     information_.push_back(
       Eigen::LLT<Eigen::Matrix3d>(voxel.covariance + noise).solve(Eigen::Matrix3d::Identity()));
   }
-
-  // A point in cell c is scored by the voxels at c + offset, so voxel v scores the cells
-  // v.coordinate - offset.
-  const size_t offset_num = params_.search_neighbors ? kNeighborOffsets.size() : 1;
-  std::unordered_map<Eigen::Vector3i, std::vector<uint32_t>, GaussianVoxelMap::CoordinateHash>
-    lists;
-  for (size_t v = 0; v < voxels.size(); ++v) {
-    for (size_t n = 0; n < offset_num; ++n) {
-      lists[voxels[v].coordinate - kNeighborOffsets[n]].push_back(static_cast<uint32_t>(v));
-    }
-  }
-  candidates_.reserve(lists.size());
-  candidate_voxels_.reserve(voxels.size() * offset_num);
-  for (const auto & [cell, list] : lists) {
-    candidates_.emplace(
-      cell, Candidates{
-              static_cast<uint32_t>(candidate_voxels_.size()), static_cast<uint32_t>(list.size())});
-    candidate_voxels_.insert(candidate_voxels_.end(), list.begin(), list.end());
-  }
 }
 
 double NdtLikelihood::scorePoint(const Eigen::Vector3d & point) const
 {
   double best = max_squared_distance_;
-  const auto it = candidates_.find(map_->voxelCoordinate(point));
-  if (it == candidates_.end()) {
-    return best;
-  }
   const auto & voxels = map_->voxels();
-  for (uint32_t k = 0; k < it->second.count; ++k) {
-    const uint32_t v = candidate_voxels_[it->second.begin + k];
+  for (const uint32_t v : map_->candidates(point)) {
     const Eigen::Vector3d error = point - voxels[v].mean;
     best = std::min(best, error.dot(information_[v] * error));
   }
@@ -101,15 +66,7 @@ std::string NdtLikelihood::description() const
 {
   std::ostringstream out;
   out << "NDT (sigma " << params_.sigma << " m, max Mahalanobis distance "
-      << params_.max_mahalanobis_distance << (params_.search_neighbors ? ", 7 voxels" : ", 1 voxel")
-      << ") on " << map_->description();
-  // approximate: hash nodes and buckets of the lookup table
-  const double table_bytes = static_cast<double>(
-    information_.size() * sizeof(Eigen::Matrix3d) + candidate_voxels_.size() * sizeof(uint32_t) +
-    candidates_.size() * (sizeof(Eigen::Vector3i) + sizeof(Candidates) + 2 * sizeof(void *)) +
-    candidates_.bucket_count() * sizeof(void *));
-  out << ", lookup table " << candidates_.size() << " cells, " << std::fixed << std::setprecision(1)
-      << table_bytes / 1e6 << " MB";
+      << params_.max_mahalanobis_distance << ") on " << map_->description();
   return out.str();
 }
 

@@ -286,6 +286,15 @@ TEST_F(Amcl3dNodeTest, LocalizesWithNdtLikelihood)
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
+TEST_F(Amcl3dNodeTest, LocalizesWithGicpLikelihood)
+{
+  start({{"point_cloud_likelihood.type", "gicp"}});
+  publishInitialPose();
+  publishScans(30);
+  EXPECT_LT(positionError(), 0.1);
+  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
+}
+
 TEST_F(Amcl3dNodeTest, RejectsUnknownLikelihoodAtStartup)
 {
   rclcpp::NodeOptions options;
