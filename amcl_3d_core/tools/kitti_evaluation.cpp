@@ -13,9 +13,9 @@
 //   twist is reported as a baseline.
 // - The filter is initialized off the ground truth by `init_offset` [m] and `init_yaw_offset`.
 //
-// Options (defaults in Config): likelihood=likelihood_field|ndt sigma=<m>
+// Options (defaults in Config): likelihood=likelihood_field|ndt|gicp sigma=<m>
 // map=distance_field|kdtree device=cpu|cuda resolution=<m> (likelihood field)
-// ndt_resolution=<m> ndt_neighbors=0|1 (NDT)
+// voxel_resolution=<m> voxel_neighbors=0|1 (NDT, GICP)
 // threads=<n> motion=twist|vehicle odometry=full|wheel base_x=<m> base_pitch=<rad>
 // resampler=systematic|kld
 // particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n> frames=<n>
@@ -56,9 +56,9 @@ namespace
 struct Config
 {
   std::string likelihood = "likelihood_field";
-  double sigma = 0.2;  // [m] of the selected likelihood
-  double ndt_resolution = 1.0;
-  bool ndt_neighbors = true;
+  double sigma = 0.2;             // [m] of the selected likelihood
+  double voxel_resolution = 1.0;  // NDT, GICP
+  bool voxel_neighbors = true;
   std::string map_type = "distance_field";
   std::string device = "cpu";  // cuda: likelihood of the distance field on the GPU
   double map_resolution = 0.2;
@@ -115,8 +115,8 @@ Config parseConfig(int argc, char ** argv)
   };
   take("likelihood", c.likelihood);
   take("sigma", c.sigma);
-  take("ndt_resolution", c.ndt_resolution);
-  take("ndt_neighbors", c.ndt_neighbors);
+  take("voxel_resolution", c.voxel_resolution);
+  take("voxel_neighbors", c.voxel_neighbors);
   take("map", c.map_type);
   take("resolution", c.map_resolution);
   take("threads", c.threads);
@@ -207,9 +207,12 @@ int main(int argc, char ** argv)
   field.map.resolution = config.map_resolution;
   field.model.sigma = config.sigma;
   auto & ndt = likelihood_params.ndt;
-  ndt.map.resolution = config.ndt_resolution;
+  ndt.map.resolution = config.voxel_resolution;
+  ndt.map.search_neighbors = config.voxel_neighbors;
   ndt.model.sigma = config.sigma;
-  ndt.model.search_neighbors = config.ndt_neighbors;
+  auto & gicp = likelihood_params.gicp;
+  gicp.map = ndt.map;
+  gicp.model.sigma = config.sigma;
   const auto likelihood = createPointCloudLikelihood(map, likelihood_params);
   localizer.setPointCloudLikelihood(likelihood);
   if (config.scan_matching) {

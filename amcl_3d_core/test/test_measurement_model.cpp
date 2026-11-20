@@ -9,6 +9,7 @@
 #include "amcl_3d_core/map/gaussian_voxel_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
 #include "amcl_3d_core/measurement_model/point_cloud_measurement_model.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/gicp_likelihood.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/ndt_likelihood.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/point_cloud_likelihood_factory.hpp"
@@ -106,14 +107,15 @@ TEST(NdtLikelihood, ScoresTheMahalanobisDistanceToTheSurface)
 
 TEST(NdtLikelihood, NeighborSearchScoresPointsInAdjacentVoxels)
 {
-  const auto map = std::make_shared<GaussianVoxelMap>(
-    makePlanePatch(0.0, 0.0, 0.95), GaussianVoxelMap::Params{1.0, 6});
+  const PointCloud patch = makePlanePatch(0.0, 0.0, 0.95);
   const Eigen::Vector3d above(0.5, 0.5, 1.05);  // in voxel (0, 0, 1), 0.1 m above the plane
-  NdtLikelihood::Params params;
-  params.search_neighbors = false;
-  EXPECT_DOUBLE_EQ(NdtLikelihood(map, params).scorePoint(above), 25.0);
-  params.search_neighbors = true;
-  EXPECT_NEAR(NdtLikelihood(map, params).scorePoint(above), 0.25, 1e-6);
+  const auto single =
+    std::make_shared<GaussianVoxelMap>(patch, GaussianVoxelMap::Params{1.0, 6, false});
+  EXPECT_TRUE(single->candidates(above).empty());
+  EXPECT_DOUBLE_EQ(NdtLikelihood(single, NdtLikelihood::Params{}).scorePoint(above), 25.0);
+  const auto neighbors =
+    std::make_shared<GaussianVoxelMap>(patch, GaussianVoxelMap::Params{1.0, 6, true});
+  EXPECT_NEAR(NdtLikelihood(neighbors, NdtLikelihood::Params{}).scorePoint(above), 0.25, 1e-6);
 }
 
 TEST(NdtLikelihood, SumsThePointScoresOfEachParticle)
@@ -146,12 +148,82 @@ TEST(NdtLikelihood, SumsThePointScoresOfEachParticle)
   EXPECT_THROW(NdtLikelihood(nullptr, NdtLikelihood::Params{}), std::invalid_argument);
 }
 
+TEST(GicpLikelihood, WithoutScanCovarianceEqualsNdt)
+{
+  const auto map =
+    std::make_shared<GaussianVoxelMap>(*test::makeRoomMap(), GaussianVoxelMap::Params{});
+  const NdtLikelihood ndt(map, NdtLikelihood::Params{});
+  const GicpLikelihood gicp(map, GicpLikelihood::Params{});
+  const ParticleSet particles = test::makeRoomParticles(30);
+  const std::vector<Eigen::Vector3d> points = test::makeRoomScanPoints();
+  const std::vector<Eigen::Matrix3d> zero(points.size(), Eigen::Matrix3d::Zero());
+  EXPECT_TRUE(gicp.logLikelihood(particles, points, zero)
+                .isApprox(ndt.logLikelihood(particles, points), 1e-9));
+}
+
+TEST(GicpLikelihood, AddsTheRotatedScanCovariance)
+{
+  const auto map = std::make_shared<GaussianVoxelMap>(
+    makePlanePatch(0.0, 0.0, 0.5), GaussianVoxelMap::Params{1.0, 6});
+  const GicpLikelihood gicp(map, GicpLikelihood::Params{});
+  const double map_xx = map->voxels()[0].covariance(0, 0);
+  const double sigma2 = 0.04;
+  // scan spread of 0.2 m along x: an offset of 0.2 m along x gets cheaper
+  const Eigen::Matrix3d along_x = Eigen::Vector3d(sigma2, 0.0, 0.0).asDiagonal();
+  const Eigen::Vector3d offset_x(0.7, 0.5, 0.5);
+  EXPECT_NEAR(gicp.scorePoint(offset_x, Eigen::Matrix3d::Zero()), sigma2 / (map_xx + sigma2), 1e-6);
+  EXPECT_NEAR(gicp.scorePoint(offset_x, along_x), sigma2 / (map_xx + 2.0 * sigma2), 1e-6);
+
+  // the covariance is given in the base frame and turns with the particle: yawed by 90 deg, the
+  // spread along the base x axis lies along the map y axis and no longer helps along x
+  ParticleSet particles(1);
+  Pose pose;
+  pose.position = offset_x;
+  pose.orientation = test::yawQuaternion(M_PI / 2.0);
+  particles.setPose(0, pose);
+  const std::vector<Eigen::Vector3d> origin{Eigen::Vector3d::Zero()};
+  EXPECT_NEAR(
+    gicp.logLikelihood(particles, origin, {along_x})(0), -0.5 * sigma2 / (map_xx + sigma2), 1e-6);
+}
+
+TEST(GicpLikelihood, EstimatesScanCovariancesFromTheWholeScan)
+{
+  std::vector<Eigen::Vector3d> line;  // points along x: only an x spread
+  for (int i = 0; i < 20; ++i) {
+    line.emplace_back(0.1 * i, 1.0, 2.0);
+  }
+  const auto map =
+    std::make_shared<GaussianVoxelMap>(*test::makeRoomMap(), GaussianVoxelMap::Params{});
+  GicpLikelihood::Params params;
+  params.neighbor_num = 5;
+  const auto gicp = std::make_shared<GicpLikelihood>(map, params);
+  const std::vector<Eigen::Vector3d> sampled{line[10]};
+  const std::vector<Eigen::Matrix3d> covariances = gicp->estimateCovariances(line, sampled);
+  ASSERT_EQ(covariances.size(), 1u);
+  EXPECT_NEAR(covariances[0](0, 0), 0.02, 1e-6);  // 5 points spaced by 0.1 m: variance 0.02
+  const Eigen::Matrix2d yz = covariances[0].bottomRightCorner(2, 2);
+  EXPECT_NEAR(yz.norm(), 0.0, 1e-9);
+
+  // the measurement model of a scan uses the covariances of the whole scan, not of the sample
+  const ParticleSet particles = test::makeRoomParticles(10);
+  const LogLikelihood result =
+    gicp->createMeasurementModel(line, sampled)->computeLogLikelihood(particles);
+  EXPECT_EQ(result.observation_num, 1u);
+  EXPECT_TRUE(result.values.isApprox(gicp->logLikelihood(particles, sampled, covariances)));
+
+  params.neighbor_num = 2;
+  EXPECT_THROW(GicpLikelihood(map, params), std::invalid_argument);
+  EXPECT_THROW(
+    gicp->logLikelihood(particles, sampled, std::vector<Eigen::Matrix3d>{}), std::invalid_argument);
+}
+
 TEST(PointCloudLikelihoodFactory, BuildsTheSelectedLikelihood)
 {
   EXPECT_EQ(
     toPointCloudLikelihoodType("likelihood_field"),
     PointCloudLikelihoodParams::Type::kLikelihoodField);
   EXPECT_EQ(toPointCloudLikelihoodType("ndt"), PointCloudLikelihoodParams::Type::kNdt);
+  EXPECT_EQ(toPointCloudLikelihoodType("gicp"), PointCloudLikelihoodParams::Type::kGicp);
   EXPECT_THROW(toPointCloudLikelihoodType("icp"), std::invalid_argument);
 
   const PointCloud::Ptr cloud = test::makeRoomMap();
@@ -163,6 +235,12 @@ TEST(PointCloudLikelihoodFactory, BuildsTheSelectedLikelihood)
   EXPECT_NE(
     dynamic_cast<const NdtLikelihood *>(createPointCloudLikelihood(cloud, params).get()), nullptr);
 
+  params.type = PointCloudLikelihoodParams::Type::kGicp;
+  EXPECT_NE(
+    dynamic_cast<const GicpLikelihood *>(createPointCloudLikelihood(cloud, params).get()), nullptr);
+  params.gicp.model.neighbor_num = 1;
+  EXPECT_THROW(validate(params), std::invalid_argument);
+  params.type = PointCloudLikelihoodParams::Type::kNdt;
   params.ndt.model.max_mahalanobis_distance = 0.0;
   EXPECT_THROW(validate(params), std::invalid_argument);
   params.type = PointCloudLikelihoodParams::Type::kLikelihoodField;

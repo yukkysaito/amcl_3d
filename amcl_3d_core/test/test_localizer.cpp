@@ -6,6 +6,7 @@
 #include "amcl_3d_core/localizer.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/gicp_likelihood.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/ndt_likelihood.hpp"
 #include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
@@ -177,6 +178,59 @@ TEST_F(RoomLocalizationTest, ConvergesWithNdtLikelihood)
   runUpdates(localizer, 30);
   EXPECT_LT(positionError(localizer), 0.1);
   EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
+}
+
+TEST_F(RoomLocalizationTest, ConvergesWithGicpLikelihood)
+{
+  params_.scan_filter.voxel_size = 0.3;
+  Localizer localizer(params_);
+  localizer.setPointCloudLikelihood(std::make_shared<GicpLikelihood>(
+    std::make_shared<GaussianVoxelMap>(*map_, GaussianVoxelMap::Params{}),
+    GicpLikelihood::Params{}));
+  localizer.initialize(
+    initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
+  runUpdates(localizer, 30);
+  EXPECT_LT(positionError(localizer), 0.1);
+  EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
+}
+
+namespace
+{
+/// Records what the localizer hands to the likelihood.
+class RecordingLikelihood : public PointCloudLikelihood
+{
+public:
+  Eigen::VectorXd logLikelihood(
+    const ParticleSet & particles, const std::vector<Eigen::Vector3d> &) const override
+  {
+    return Eigen::VectorXd::Zero(static_cast<Eigen::Index>(particles.size()));
+  }
+  std::unique_ptr<MeasurementModel> createMeasurementModel(
+    const std::vector<Eigen::Vector3d> & scan, std::vector<Eigen::Vector3d> sampled) const override
+  {
+    scan_size = scan.size();
+    sample_size = sampled.size();
+    return PointCloudLikelihood::createMeasurementModel(scan, std::move(sampled));
+  }
+  std::string description() const override { return "recording"; }
+
+  mutable size_t scan_size = 0;
+  mutable size_t sample_size = 0;
+};
+}  // namespace
+
+TEST_F(RoomLocalizationTest, HandsTheWholeFilteredScanToTheLikelihood)
+{
+  params_.scan_filter.voxel_size = 0.3;
+  params_.scan_sample_num = 50;
+  Localizer localizer(params_);
+  const auto likelihood = std::make_shared<RecordingLikelihood>();
+  localizer.setPointCloudLikelihood(likelihood);
+  localizer.initialize(PoseWithCovariance{}, seconds(0.0));
+  ASSERT_EQ(localizer.updateWithPointCloud(*scan_, seconds(0.1)), LocalizerStatus::kOk);
+  EXPECT_EQ(likelihood->scan_size, ScanFilter(params_.scan_filter).apply(*scan_).size());
+  EXPECT_GT(likelihood->scan_size, 50u);
+  EXPECT_EQ(likelihood->sample_size, 50u);
 }
 
 TEST_F(RoomLocalizationTest, VehicleModelConvergesWhenInitializedAtStandstill)

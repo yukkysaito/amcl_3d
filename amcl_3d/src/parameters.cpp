@@ -82,8 +82,8 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
   likelihood.setThreadNum(thread_num);
   likelihood.type = toPointCloudLikelihoodType(declare<std::string>(
     node, "point_cloud_likelihood.type", "likelihood_field",
-    "'likelihood_field' (distance to the nearest map point) or 'ndt' (voxel normal distributions, "
-    "small map)"));
+    "'likelihood_field' (distance to the nearest map point), 'ndt' (voxel normal distributions, "
+    "small map) or 'gicp' (ndt with the scan covariances)"));
 
   auto & field = likelihood.likelihood_field;
   const auto & field_defaults = likelihood_defaults.likelihood_field;
@@ -118,10 +118,32 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
     node, "point_cloud_likelihood.ndt.max_mahalanobis_distance",
     ndt_likelihood_defaults.model.max_mahalanobis_distance,
     "Per-point clipping of the Mahalanobis distance [std dev]");
-  ndt.model.search_neighbors = declare<bool>(
+  ndt.map.search_neighbors = declare<bool>(
     node, "point_cloud_likelihood.ndt.search_neighbors",
-    ndt_likelihood_defaults.model.search_neighbors,
-    "Also score with the 6 face-neighboring voxels (wider basin, more accurate)");
+    ndt_likelihood_defaults.map.search_neighbors,
+    "Also match with the 6 face-neighboring voxels (wider basin, more accurate)");
+
+  auto & gicp = likelihood.gicp;
+  const auto & gicp_defaults = likelihood_defaults.gicp;
+  gicp.map.resolution = declare<double>(
+    node, "point_cloud_likelihood.gicp.resolution", gicp_defaults.map.resolution,
+    "Voxel size of the map distributions [m]");
+  gicp.map.min_point_num = declareCount(
+    node, "point_cloud_likelihood.gicp.min_point_num", gicp_defaults.map.min_point_num,
+    "Voxels with fewer map points are dropped");
+  gicp.map.search_neighbors = declare<bool>(
+    node, "point_cloud_likelihood.gicp.search_neighbors", gicp_defaults.map.search_neighbors,
+    "Also match with the 6 face-neighboring voxels (wider basin, more accurate)");
+  gicp.model.sigma = declare<double>(
+    node, "point_cloud_likelihood.gicp.sigma", gicp_defaults.model.sigma,
+    "Measurement noise added to every pair of distributions [m]");
+  gicp.model.max_mahalanobis_distance = declare<double>(
+    node, "point_cloud_likelihood.gicp.max_mahalanobis_distance",
+    gicp_defaults.model.max_mahalanobis_distance,
+    "Per-point clipping of the Mahalanobis distance [std dev]");
+  gicp.model.neighbor_num = declareCount(
+    node, "point_cloud_likelihood.gicp.neighbor_num", gicp_defaults.model.neighbor_num,
+    "Scan points per scan covariance");
   validate(likelihood);  // fail at startup, not when the map arrives
 
   p.global_localization.particle_num = declareCount(

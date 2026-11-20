@@ -1,5 +1,6 @@
 #include "amcl_3d_core/map/gaussian_voxel_map.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -14,6 +15,12 @@ namespace
 /// map to kOutside, which is no voxel and no neighbor of one.
 constexpr double kGridLimit = 1 << 30;
 const Eigen::Vector3i kOutside = Eigen::Vector3i::Constant(std::numeric_limits<int>::max());
+
+const std::array<Eigen::Vector3i, 7> kNeighborOffsets{
+  Eigen::Vector3i(0, 0, 0),  Eigen::Vector3i(1, 0, 0),  Eigen::Vector3i(-1, 0, 0),
+  Eigen::Vector3i(0, 1, 0),  Eigen::Vector3i(0, -1, 0), Eigen::Vector3i(0, 0, 1),
+  Eigen::Vector3i(0, 0, -1),
+};
 
 struct Moments
 {
@@ -76,6 +83,38 @@ GaussianVoxelMap::GaussianVoxelMap(const PointCloud & cloud, const Params & para
   if (voxels_.empty()) {
     throw std::invalid_argument("GaussianVoxelMap: no voxel has min_point_num points");
   }
+  buildCandidates();
+}
+
+void GaussianVoxelMap::buildCandidates()
+{
+  // A point in cell c is matched with the voxels at c + offset, so voxel v serves the cells
+  // v.coordinate - offset.
+  const size_t offset_num = params_.search_neighbors ? kNeighborOffsets.size() : 1;
+  std::unordered_map<Eigen::Vector3i, std::vector<uint32_t>, CoordinateHash> lists;
+  for (size_t v = 0; v < voxels_.size(); ++v) {
+    for (size_t n = 0; n < offset_num; ++n) {
+      lists[voxels_[v].coordinate - kNeighborOffsets[n]].push_back(static_cast<uint32_t>(v));
+    }
+  }
+  candidates_.reserve(lists.size());
+  candidate_voxels_.reserve(voxels_.size() * offset_num);
+  for (const auto & [cell, list] : lists) {
+    candidates_.emplace(
+      cell,
+      Span{static_cast<uint32_t>(candidate_voxels_.size()), static_cast<uint32_t>(list.size())});
+    candidate_voxels_.insert(candidate_voxels_.end(), list.begin(), list.end());
+  }
+}
+
+GaussianVoxelMap::CandidateRange GaussianVoxelMap::candidates(const Eigen::Vector3d & point) const
+{
+  const auto it = candidates_.find(voxelCoordinate(point));
+  if (it == candidates_.end()) {
+    return CandidateRange(nullptr, nullptr);
+  }
+  const uint32_t * begin = candidate_voxels_.data() + it->second.begin;
+  return CandidateRange(begin, begin + it->second.count);
 }
 
 Eigen::Vector3i GaussianVoxelMap::voxelCoordinate(const Eigen::Vector3d & point) const
@@ -95,10 +134,20 @@ int64_t GaussianVoxelMap::find(const Eigen::Vector3i & coordinate) const
 
 std::string GaussianVoxelMap::description() const
 {
-  char text[128];
+  // approximate: hash tables counted as nodes plus buckets
+  const auto hash_bytes = [](const auto & table, size_t entry_bytes) {
+    return table.size() * (entry_bytes + 2 * sizeof(void *)) +
+           table.bucket_count() * sizeof(void *);
+  };
+  const size_t bytes = voxels_.size() * sizeof(Voxel) +
+                       hash_bytes(index_, sizeof(Eigen::Vector3i) + sizeof(uint32_t)) +
+                       hash_bytes(candidates_, sizeof(Eigen::Vector3i) + sizeof(Span)) +
+                       candidate_voxels_.size() * sizeof(uint32_t);
+  char text[160];
   std::snprintf(
-    text, sizeof(text), "Gaussian voxels: %.2f m, %zu voxels, %.1f MB", params_.resolution,
-    voxels_.size(), static_cast<double>(voxels_.size() * sizeof(Voxel)) / 1e6);
+    text, sizeof(text), "Gaussian voxels: %.2f m, %zu voxels, %s, %.1f MB", params_.resolution,
+    voxels_.size(), params_.search_neighbors ? "7 voxels per point" : "1 voxel per point",
+    static_cast<double>(bytes) / 1e6);
   return text;
 }
 
