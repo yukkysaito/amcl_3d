@@ -13,6 +13,11 @@
     # tf / output
     transform_tolerance: 0.1  # [s] future dating of map->odom
     tf_timeout: 0.1           # [s]
+    # time guards [s]: inputs stamped further ahead of the node clock are dropped (e.g. a sensor
+    # on another clock), and a scan older than the newest one by more than time_jump_threshold
+    # (> max_measurement_delay) restarts the filter at its estimate (e.g. a looping rosbag)
+    max_stamp_lead: 1.0
+    time_jump_threshold: 5.0
     publish_tf: true
     publish_particles: true
     # used when the initial pose has no covariance: x, y, z [m], roll, pitch, yaw [rad]
