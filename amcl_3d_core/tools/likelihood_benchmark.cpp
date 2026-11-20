@@ -14,8 +14,8 @@
 #include "amcl_3d_core/map/cuda_distance_field_map.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
-#include "amcl_3d_core/measurement_model/point_cloud_measurement_model.hpp"
 #include "amcl_3d_core/particle_filter.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 
 using namespace amcl_3d;
 
@@ -75,12 +75,13 @@ double measureMs(
   ParticleFilter filter(1);
   filter.initialize(initial, particle_num);
   std::mt19937 rng(1);
-  const PointCloudMeasurementModel model(map, makeScan(point_num, rng), {1.0, 0.2, thread_num});
+  const LikelihoodField likelihood(map, LikelihoodField::Params{1.0, 0.2, thread_num});
+  const std::vector<Eigen::Vector3d> scan = makeScan(point_num, rng);
 
   double sum = 0.0;  // keeps the result alive
   const auto start = std::chrono::steady_clock::now();
   for (int r = 0; r < repetitions; ++r) {
-    sum += model.computeLogLikelihood(filter.particles()).values.sum();
+    sum += likelihood.logLikelihood(filter.particles(), scan).sum();
   }
   const auto end = std::chrono::steady_clock::now();
   if (!std::isfinite(sum)) {

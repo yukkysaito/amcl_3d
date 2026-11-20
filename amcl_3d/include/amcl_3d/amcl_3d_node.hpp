@@ -67,8 +67,7 @@ private:
     const std::string & target_frame, const std::string & source_frame, const rclcpp::Time & stamp);
 
   // declaration order matters: parameters are declared before the localizer is built
-  LocalizerParams localizer_params_;
-  NodeParams params_;
+  Amcl3dParams params_;
   std::unique_ptr<Localizer> localizer_;
   std::unique_ptr<GroundPoseSampler> global_sampler_;
 

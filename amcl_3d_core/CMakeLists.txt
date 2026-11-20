@@ -47,6 +47,7 @@ add_library(${PROJECT_NAME} SHARED
   src/motion_model/vehicle_motion_model.cpp
   src/particle_filter.cpp
   src/particle_set.cpp
+  src/point_cloud_likelihood/likelihood_field.cpp
   src/random.cpp
   src/resampler/kld_resampler.cpp
   src/resampler/systematic_resampler.cpp
@@ -90,6 +91,7 @@ endif()
 set(TEST_SOURCES
   test/test_map.cpp
   test/test_math.cpp
+  test/test_measurement_model.cpp
   test/test_particle_filter.cpp
   test/test_motion_model.cpp
   test/test_resampler.cpp

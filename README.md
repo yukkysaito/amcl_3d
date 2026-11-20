@@ -93,21 +93,38 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 Localizer                      time handling, resampling policy, recovery, refinement
  ├─ ParticleFilter             initialize / predict / update / resample / estimate
  │   └─ ParticleSet            structure of arrays + log weights (vectorization / GPU friendly)
- ├─ MotionModel                TwistMotionModel
- ├─ MeasurementModel           PointCloudMeasurementModel, PoseMeasurementModel
- │   └─ PointCloudMap          KdTreeMap, DistanceFieldMap, CudaDistanceFieldMap
- │                             (batched query over particles x points: OpenMP, or a GPU override)
+ ├─ MotionModel                TwistMotionModel, VehicleMotionModel
+ ├─ MeasurementModel           one measurement of any sensor, fused by Localizer::update()
+ │   ├─ PoseMeasurementModel   absolute pose (external scan matching, GNSS)
+ │   └─ PointCloudMeasurementModel
+ │       └─ PointCloudLikelihood   sensor model of scans: LikelihoodField
+ │           └─ PointCloudMap      KdTreeMap, DistanceFieldMap, CudaDistanceFieldMap
+ │                                 (batched query over particles x points: OpenMP or GPU)
  ├─ Resampler                  SystematicResampler, KldResampler
  ├─ ScanFilter
  └─ ScanMatcher                NdtScanMatcher
 PoseSampler                    GaussianPoseSampler, GroundPoseSampler (global localization)
+createMotionModel()            builds the MotionModel selected by MotionModelParams
 createPointCloudMap()          builds the PointCloudMap selected by MapParams (type, device)
 ```
 
-`MotionModel`, `MeasurementModel`, `PointCloudMap`, `Resampler`, `ScanMatcher` and `PoseSampler`
-are the extension points. A new map implementation is added to `createPointCloudMap()`
-(`map/map_factory.cpp`), the only place that knows all of them; the node and the tools only pass
-`MapParams` through.
+The extension points are interfaces with a factory where a parameter selects the implementation:
+
+- **A new sensor** (camera landmarks, GNSS, UWB, ...) implements `MeasurementModel`: one instance
+  holds one measurement and returns the log-likelihood of each particle. `Localizer::update()`
+  fuses it with the prediction, resampling and recovery shared by all sensors; the localizer
+  needs no change. Long-lived state (a landmark map, camera intrinsics and extrinsics) belongs to a
+  sensor model shared by the measurement instances, as `PointCloudLikelihood` is for scans.
+- **A new scan likelihood** (NDT, GICP, ...) implements `PointCloudLikelihood`, which owns the map
+  representation it needs (distance field, voxel Gaussians, ...).
+- **A new map backend** for the likelihood field implements `PointCloudMap` and is added to
+  `createPointCloudMap()`; a new motion model implements `MotionModel` and is added to
+  `createMotionModel()`.
+
+All measurement models follow one convention: the log-likelihood of an observation is <= 0 and 0
+when it is perfectly explained, so that `exp(log-likelihood / observation count)` is a likelihood
+per observation in (0, 1] comparable across sensors, which augmented MCL and expansion resetting
+use.
 
 Source layout of `amcl_3d_core` (headers under `include/amcl_3d_core/`, sources under `src/`):
 
@@ -115,7 +132,7 @@ Source layout of `amcl_3d_core` (headers under `include/amcl_3d_core/`, sources 
 |---|---|
 | `.` | `Localizer`, `ParticleFilter`, `ParticleSet`, `ScanFilter`, value types, math, random |
 | `map/` | `PointCloudMap` and its implementations, `map_factory`; `src/map/cuda/` holds the CUDA code |
-| `measurement_model/`, `motion_model/`, `resampler/`, `scan_matcher/`, `pose_sampler/` | one interface and its implementations each |
+| `measurement_model/`, `point_cloud_likelihood/`, `motion_model/`, `resampler/`, `scan_matcher/`, `pose_sampler/` | one interface and its implementations each |
 | `tools/` | KITTI evaluation (`kitti_dataset`, `statistics`) and the likelihood benchmark |
 
 ## Evaluation

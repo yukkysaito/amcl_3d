@@ -8,6 +8,7 @@
 
 #include "amcl_3d_core/localizer.hpp"
 #include "amcl_3d_core/map/cuda_distance_field_map.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "test_utils.hpp"
 
 namespace amcl_3d
@@ -119,7 +120,8 @@ TEST_F(CudaDistanceFieldMapTest, LocalizerConverges)
   params.scan_filter.voxel_size = 0.3;
   params.motion_model.twist = TwistMotionModel::Params{0.0, 0.02, 0.0, 0.005};
   Localizer localizer(params);
-  localizer.setMap(map_);
+  localizer.setPointCloudLikelihood(
+    std::make_shared<LikelihoodField>(map_, LikelihoodField::Params{}));
   PoseWithCovariance initial;
   initial.pose.position = true_pose.position + Eigen::Vector3d(0.3, -0.2, 0.0);
   initial.pose.orientation = test::yawQuaternion(0.2);
