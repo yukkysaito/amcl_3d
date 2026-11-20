@@ -101,7 +101,9 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
 - **Recovery**: augmented MCL, expansion resetting (statistics per sensor), global localization
 - **Refinement**: optional NDT scan matching of the estimate (with optional feedback)
-- Outputs pose with covariance (quaternion averaging) and `map` -> `odom`
+- **Estimate**: mean and covariance (quaternion averaging) of the most likely cluster of particles
+  (`estimate.type`), so that a multimodal cloud, e.g. during global localization, yields a pose on
+  its strongest mode rather than between the modes; plus `map` -> `odom`
 
 ## Design
 

@@ -49,6 +49,18 @@ const char * toString(LocalizerStatus status)
   return "unknown";
 }
 
+PoseWithCovariance Localizer::estimate() const
+{
+  const ParticleFilter & filter = current().filter;
+  switch (params_.estimate.type) {
+    case EstimateType::kBestCluster:
+      return filter.bestClusterEstimate(params_.estimate.clustering);
+    case EstimateType::kMean:
+      break;
+  }
+  return filter.estimate();
+}
+
 Localizer::Localizer(const LocalizerParams & params)
 : params_(params),
   motion_model_(createMotionModel(params.motion_model)),

@@ -382,6 +382,52 @@ TEST(Localizer, FusesAnyMeasurementModel)
   EXPECT_THROW(localizer.update(sensor, nullptr, seconds(2.0)), std::invalid_argument);
 }
 
+/// Two places explain the measurement, x = -2 a bit better than x = +2 (e.g. a symmetric corridor).
+class TwoPlacesModel : public MeasurementModel
+{
+public:
+  LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override
+  {
+    LogLikelihood result;
+    result.values.resize(static_cast<Eigen::Index>(particles.size()));
+    for (size_t i = 0; i < particles.size(); ++i) {
+      const Eigen::Vector3d p = particles.pose(i).position;
+      auto peak = [&](double x, double weight) {
+        return weight * std::exp(-(std::pow(p.x() - x, 2) + p.y() * p.y()) / (2.0 * 0.2 * 0.2));
+      };
+      result.values(static_cast<Eigen::Index>(i)) =
+        std::log(peak(-2.0, 0.6) + peak(2.0, 0.4) + 1e-12);
+    }
+    return result;
+  }
+};
+
+TEST(Localizer, EstimateStaysOnTheMostLikelyMode)
+{
+  for (const auto type : {EstimateType::kBestCluster, EstimateType::kMean}) {
+    for (const uint64_t seed : {1u, 2u, 3u}) {
+      LocalizerParams params;
+      params.random_seed = seed;
+      params.initial_particle_num = 5000;
+      params.estimate.type = type;
+      Localizer localizer(params);
+      PoseWithCovariance initial;
+      initial.covariance.diagonal() << 4.0, 1.0, 1e-4, 1e-4, 1e-4, 1e-4;
+      localizer.initialize(initial, seconds(0.0));
+      const SensorId sensor = localizer.addSensor(SensorParams{"two_places"});
+      ASSERT_EQ(
+        localizer.update(sensor, std::make_shared<TwoPlacesModel>(), seconds(0.1)),
+        LocalizerStatus::kOk);
+      const double x = localizer.estimate().pose.position.x();
+      if (type == EstimateType::kBestCluster) {
+        EXPECT_NEAR(x, -2.0, 0.1) << "seed " << seed;
+      } else {
+        EXPECT_NEAR(x, -0.4, 0.3) << "seed " << seed;  // 0.6 * -2 + 0.4 * 2, between the modes
+      }
+    }
+  }
+}
+
 TEST(Localizer, PoseUpdateConvergesToObservation)
 {
   LocalizerParams params;

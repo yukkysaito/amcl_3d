@@ -27,6 +27,12 @@ enum class ResamplerType
   kKld
 };
 
+enum class EstimateType
+{
+  kMean,         // weighted mean of all particles (MMSE)
+  kBestCluster,  // weighted mean of the most likely cluster, see clusterParticles()
+};
+
 struct LocalizerParams
 {
   size_t initial_particle_num = 500;
@@ -93,6 +99,14 @@ struct LocalizerParams
     /// Std of the matched pose used for the feedback: x, y, z [m], roll, pitch, yaw [rad].
     Vector6d feedback_stddev = (Vector6d() << 0.1, 0.1, 0.1, 0.01, 0.01, 0.02).finished();
   } scan_matching;
+
+  /// How estimate() summarizes the particles. The mean of a multimodal cloud lies between its
+  /// modes, where no particle is; the best cluster stays on the most likely mode.
+  struct Estimate
+  {
+    EstimateType type = EstimateType::kBestCluster;
+    ParticleClustering::Params clustering;
+  } estimate;
 
   uint64_t random_seed = 0;
 };
@@ -194,7 +208,8 @@ public:
   LocalizerStatus updateWithPose(const PoseWithCovariance & observation, const Time & stamp);
 
   // State at the newest measurement.
-  PoseWithCovariance estimate() const { return current().filter.estimate(); }
+  /// Pose and covariance of the particles, as set by LocalizerParams::estimate.
+  PoseWithCovariance estimate() const;
   /// Pose refined by scan matching of the newest measurement, if it is a scan and matched.
   std::optional<Pose> refinedPose() const;
   const ParticleSet & particles() const { return current().filter.particles(); }
