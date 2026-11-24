@@ -3,6 +3,7 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 #include <algorithm>
+
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -78,7 +79,18 @@ Eigen::Matrix3d regularizeToPlane(const Eigen::Matrix3d & covariance)
 std::vector<Eigen::Matrix3d> planeCovariances(
   const std::vector<Eigen::Vector3d> & points, size_t neighbor_num, size_t thread_num)
 {
-  std::vector<Eigen::Matrix3d> covariances(points.size(), Eigen::Matrix3d::Identity());
+  std::vector<size_t> all(points.size());
+  for (size_t i = 0; i < all.size(); ++i) {
+    all[i] = i;
+  }
+  return planeCovariances(points, all, neighbor_num, thread_num);
+}
+
+std::vector<Eigen::Matrix3d> planeCovariances(
+  const std::vector<Eigen::Vector3d> & points, const std::vector<size_t> & queries,
+  size_t neighbor_num, size_t thread_num)
+{
+  std::vector<Eigen::Matrix3d> covariances(queries.size(), Eigen::Matrix3d::Identity());
   if (points.size() < 3) {
     return covariances;
   }
@@ -90,9 +102,9 @@ std::vector<Eigen::Matrix3d> planeCovariances(
   pcl::KdTreeFLANN<pcl::PointXYZ> tree;
   tree.setInputCloud(cloud);
   const int k = static_cast<int>(std::min(neighbor_num, points.size()));
-  parallelFor(static_cast<int64_t>(points.size()), thread_num, [&](int64_t i) {
+  parallelFor(static_cast<int64_t>(queries.size()), thread_num, [&](int64_t i) {
     covariances[static_cast<size_t>(i)] =
-      neighborhoodCovariance(tree, cloud->points[static_cast<size_t>(i)], k);
+      neighborhoodCovariance(tree, cloud->points[queries[static_cast<size_t>(i)]], k);
   });
   return covariances;
 }
@@ -123,15 +135,29 @@ GicpScanMatcher::GicpScanMatcher(const PointCloud::ConstPtr & map, const Params 
 }
 
 ScanMatchingResult GicpScanMatcher::align(
-  const std::vector<Eigen::Vector3d> & scan, const Pose & initial_guess)
+  const std::vector<Eigen::Vector3d> & full_scan, const Pose & initial_guess)
 {
+  // registered points: an even subset, with covariances from the neighbors in the whole scan
+  std::vector<size_t> queries;
+  const size_t max_point_num = params_.max_point_num;
+  const size_t stride = max_point_num > 0 && full_scan.size() > max_point_num
+                          ? (full_scan.size() + max_point_num - 1) / max_point_num
+                          : 1;
+  for (size_t i = 0; i < full_scan.size(); i += stride) {
+    queries.push_back(i);
+  }
+  std::vector<Eigen::Vector3d> scan;
+  scan.reserve(queries.size());
+  for (const size_t i : queries) {
+    scan.push_back(full_scan[i]);
+  }
   ScanMatchingResult result;
   result.pose = initial_guess;
   if (scan.size() < 3) {
     return result;
   }
   const std::vector<Eigen::Matrix3d> scan_covariances =
-    planeCovariances(scan, params_.neighbor_num, params_.thread_num);
+    planeCovariances(full_scan, queries, params_.neighbor_num, params_.thread_num);
   const double kernel_squared = params_.robust_kernel_width * params_.robust_kernel_width;
   const float max_squared_distance =
     static_cast<float>(params_.max_correspondence_distance * params_.max_correspondence_distance);
@@ -164,10 +190,12 @@ ScanMatchingResult GicpScanMatcher::align(
         const Eigen::Matrix3d information =
           (map_covariance + rotation * scan_covariances[k] * rotation.transpose()).inverse();
         const Eigen::Vector3d e = q - map_->points[m].getVector3fMap().cast<double>();
-        // left perturbation exp(delta) T, delta = (rotation, translation): de = -[q]x w + dt
+        // perturbation in the scan frame, T exp(delta) with delta = (rotation w, translation v):
+        // de = -R [p]x w + R v. Linearized about the sensor, not the far map origin, where a
+        // rotation would swing the scan by its distance to the origin.
         Eigen::Matrix<double, 3, 6> J;
-        J.leftCols<3>() = -skew(q);
-        J.rightCols<3>().setIdentity();
+        J.leftCols<3>() = -rotation * skew(scan[k]);
+        J.rightCols<3>() = rotation;
         const double squared_mahalanobis = e.dot(information * e);
         // Cauchy weight (iteratively reweighted least squares)
         const double w = 1.0 / (1.0 + squared_mahalanobis / kernel_squared);
@@ -189,9 +217,8 @@ ScanMatchingResult GicpScanMatcher::align(
       return result;
     }
     const Vector6d delta = total.H.ldlt().solve(-total.b);
-    const Eigen::Matrix3d step_rotation = expMap(delta.head<3>()).toRotationMatrix();
-    rotation = step_rotation * rotation;
-    translation = step_rotation * translation + delta.tail<3>();
+    translation += rotation * delta.tail<3>();
+    rotation = rotation * expMap(delta.head<3>()).toRotationMatrix();
     converged = delta.head<3>().norm() < params_.rotation_epsilon &&
                 delta.tail<3>().norm() < params_.translation_epsilon;
   }

@@ -41,6 +41,9 @@ public:
     double robust_kernel_width = 3.0;
     /// Results whose fraction of scan points with a correspondence is lower are not converged.
     double min_inlier_ratio = 0.3;
+    /// Scan points registered at most (an even subset; 0: all). The covariances still come from
+    /// the whole scan.
+    size_t max_point_num = 1000;
     size_t thread_num = 4;  // CPU threads (0: all hardware threads)
   };
 
@@ -65,6 +68,11 @@ private:
 /// a plane (see regularizeToPlane()).
 std::vector<Eigen::Matrix3d> planeCovariances(
   const std::vector<Eigen::Vector3d> & points, size_t neighbor_num, size_t thread_num = 1);
+
+/// planeCovariances() of points[queries[i]] only, from their neighbors among all `points`.
+std::vector<Eigen::Matrix3d> planeCovariances(
+  const std::vector<Eigen::Vector3d> & points, const std::vector<size_t> & queries,
+  size_t neighbor_num, size_t thread_num = 1);
 
 /// Eigenvalues replaced by (1e-3, 1, 1) along the principal axes, the smallest one being the
 /// surface normal (Segal et al., 2009): the covariance of a plane, whatever the point density.
