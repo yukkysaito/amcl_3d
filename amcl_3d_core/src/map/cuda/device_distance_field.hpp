@@ -15,13 +15,13 @@ namespace amcl_3d
 namespace cuda
 {
 /// Geometry of a DistanceFieldMap, with the sparse blocks looked up through a dense grid of block
-/// indices over the bounding box of the blocks (-1: no block).
+/// indices over the bounding box of the blocks (-1: no block). Coordinates on the device are
+/// relative to the corner of lookup[0], which the caller subtracts from the transforms.
 struct FieldLayout
 {
   float resolution;    // [m]
   float offset_scale;  // [m] per quantization step of the site offsets
   int block_size;      // voxels per block edge
-  int block_min[3];    // block coordinate of lookup[0]
   int block_dims[3];   // lookup grid size, x fastest
 };
 

@@ -50,6 +50,7 @@ public:
 private:
   std::shared_ptr<const DistanceFieldMap> field_;
   std::unique_ptr<cuda::DeviceDistanceField> device_field_;
+  Eigen::Vector3d origin_;  // world position of the device field's zero
 };
 
 }  // namespace amcl_3d
