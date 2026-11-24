@@ -58,6 +58,7 @@ add_library(${PROJECT_NAME} SHARED
   src/resampler/kld_resampler.cpp
   src/resampler/systematic_resampler.cpp
   src/scan_filter.cpp
+  src/scan_matcher/gicp_scan_matcher.cpp
   src/scan_matcher/ndt_scan_matcher.cpp
 )
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
@@ -103,6 +104,7 @@ set(TEST_SOURCES
   test/test_motion_model.cpp
   test/test_resampler.cpp
   test/test_scan_filter.cpp
+  test/test_scan_matcher.cpp
   test/test_twist_history.cpp
   test/test_asynchronous_localizer.cpp
   test/test_localizer.cpp

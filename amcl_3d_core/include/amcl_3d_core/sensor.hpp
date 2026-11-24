@@ -47,6 +47,15 @@ struct SensorParams
   /// On KITTI, reweighted late scans were no more accurate than dropped ones (newer scans carry
   /// the same information); it pays off for a sensor whose information the others lack.
   DelayedFusion delayed_fusion = DelayedFusion::kReplay;
+
+  /// Annealed particle filter (Deutscher et al., 2000): an update first runs this many extra
+  /// layers, each weighting the particles by the likelihood raised to the largest exponent that
+  /// keeps half of them effective, resampling and moving them by a quarter of their own spread
+  /// (Gaussian). The cloud concentrates where the likelihood is high before the regular update,
+  /// instead of keeping only the few particles the motion model put there. Costs one likelihood
+  /// evaluation per layer. Like expansion resetting, the moves are not motion: a delayed
+  /// measurement fused by reweighting (DelayedFusion::kReweight) scores moved descendants. 0: off.
+  size_t annealing_layer_num = 0;
 };
 
 }  // namespace amcl_3d

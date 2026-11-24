@@ -277,6 +277,11 @@ private:
   void predict(FilterState & state, const Time & stamp) const;
   void correct(FilterState & state, SensorId sensor, const LogLikelihood & log_likelihood) const;
   bool needsResampling(const ParticleFilter & filter) const;
+  /// One annealing layer (SensorParams::annealing_layer_num) with `model`.
+  void anneal(
+    FilterState & state, const MeasurementModel & model, const SensorParams & sensor) const;
+  /// Resamples and composes the genealogy of the state with the new parents.
+  void resample(FilterState & state) const;
   std::vector<Eigen::Vector3d> samplePoints(
     const std::vector<Eigen::Vector3d> & points, const Time & stamp) const;
   void refineByScanMatching(const std::vector<Eigen::Vector3d> & points, const Time & stamp);

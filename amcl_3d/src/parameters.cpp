@@ -180,7 +180,21 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
   const NdtScanMatcher::Params ndt_defaults;
   auto & matching = p.scan_matching;
   matching.enabled =
-    declare<bool>(node, "scan_matching.enabled", false, "Refine the estimate by NDT scan matching");
+    declare<bool>(node, "scan_matching.enabled", false, "Refine the estimate by scan matching");
+  matching.type =
+    declare<std::string>(node, "scan_matching.type", "gicp", "Scan matcher: 'gicp' or 'ndt'");
+  if (matching.type != "gicp" && matching.type != "ndt") {
+    throw std::invalid_argument(
+      "parameter 'scan_matching.type' must be 'gicp' or 'ndt': " + matching.type);
+  }
+  const GicpScanMatcher::Params gicp_matcher_defaults;
+  matching.gicp.max_correspondence_distance = declare<double>(
+    node, "scan_matching.gicp.max_correspondence_distance",
+    gicp_matcher_defaults.max_correspondence_distance, "Pairs farther apart are dropped [m]");
+  matching.gicp.robust_kernel_width = declare<double>(
+    node, "scan_matching.gicp.robust_kernel_width", gicp_matcher_defaults.robust_kernel_width,
+    "Cauchy kernel width on the Mahalanobis distance of a pair");
+  matching.gicp.thread_num = thread_num;
   matching.ndt.resolution = declare<double>(
     node, "scan_matching.ndt.resolution", ndt_defaults.resolution, "NDT voxel size [m]");
   matching.ndt.step_size = declare<double>(
@@ -212,6 +226,9 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   p.point_cloud_sensor.max_effective_observation_num = declareCount(
     node, "scan_max_effective_points", defaults.point_cloud_sensor.max_effective_observation_num,
     "A scan counts as at most this many independent points (tempering; 0: no limit)");
+  p.point_cloud_sensor.annealing_layer_num = declareCount(
+    node, "scan_annealing_layers", defaults.point_cloud_sensor.annealing_layer_num,
+    "Annealing layers run before each scan update (annealed particle filter; 0: off)");
   p.max_measurement_delay = declare<double>(
     node, "max_measurement_delay", defaults.max_measurement_delay,
     "Measurements and odometry up to this much older than the newest scan are fused at their "

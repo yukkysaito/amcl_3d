@@ -25,6 +25,11 @@
     # and treating them as independent makes the filter overconfident. 5-10 cut the error by
     # 25-40 % on KITTI 07; 0 disables the limit.
     scan_max_effective_points: 10
+    # Annealed particle filter: before each scan update, this many layers weight the particles by
+    # a softened likelihood, resample and move them, so the cloud gathers where the scan fits
+    # instead of where the motion model scattered it. ~1.7 ms per layer with 500 particles;
+    # 5 layers: KITTI 07 0.092-0.105 -> 0.043-0.045 m (sigma 0.1, 500 points). 0: off.
+    scan_annealing_layers: 5
     # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
     # at their own time by replaying the newer scans [s]; costs one particle set per scan of memory.
     max_measurement_delay: 1.0
@@ -132,12 +137,16 @@
       cell_size: 1.0    # [m] grid to find the ground height
       base_height: 0.0  # [m] base frame above the ground
 
-    # refine the published pose by NDT scan matching
+    # refine the published pose by scan matching
     scan_matching:
       enabled: false
+      type: gicp  # gicp (cm-level on KITTI) | ndt (PCL)
       max_correction: 1.0  # [m] reject matches farther than this from the particle estimate
       feedback: false      # also correct the particles (uses the scan twice: overconfident)
       feedback_stddev: [0.1, 0.1, 0.1, 0.01, 0.01, 0.02]
+      gicp:
+        max_correspondence_distance: 1.0  # [m]
+        robust_kernel_width: 3.0          # Cauchy kernel on the Mahalanobis distance of a pair
       ndt:
         resolution: 1.0
         step_size: 0.1

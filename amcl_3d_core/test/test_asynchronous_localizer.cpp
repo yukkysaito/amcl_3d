@@ -404,13 +404,16 @@ TEST(AsynchronousLocalizer, DelayedScansGiveTheResultOfTimeOrder)
                       }});
   }
   const auto setup = [&](Localizer & l) { l.setPointCloudLikelihood(likelihood); };
-  const Localizer in_order = run(
-    params, events, [](const Event & e) { return e.stamp; }, setup, true_pose);
-  const Localizer delayed = run(
-    params, events, [](const Event & e) { return e.arrival; }, setup, true_pose);
-  EXPECT_GT(delayed.replayedCount(), 0u);
-  expectIdentical(delayed, in_order);
-  EXPECT_LT((in_order.estimate().pose.position - true_pose.position).norm(), 0.5);
+  for (const size_t annealing_layer_num : {0, 2}) {  // annealing resamples and moves in between
+    params.point_cloud_sensor.annealing_layer_num = annealing_layer_num;
+    const Localizer in_order = run(
+      params, events, [](const Event & e) { return e.stamp; }, setup, true_pose);
+    const Localizer delayed = run(
+      params, events, [](const Event & e) { return e.arrival; }, setup, true_pose);
+    EXPECT_GT(delayed.replayedCount(), 0u);
+    expectIdentical(delayed, in_order);
+    EXPECT_LT((in_order.estimate().pose.position - true_pose.position).norm(), 0.5);
+  }
 }
 
 TEST(AsynchronousLocalizer, OnlySensorsThatDriveRecoveryTriggerResets)

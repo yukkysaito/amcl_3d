@@ -371,16 +371,7 @@ bool Localizer::reweightFrom(size_t index)
   }
   FilterState & newest = history_.back().state;
   if (needsResampling(newest.filter)) {
-    const std::vector<size_t> parents = newest.filter.resample(*resampler_);
-    if (!newest.parents.empty()) {
-      std::vector<size_t> composed(parents.size());
-      for (size_t j = 0; j < parents.size(); ++j) {
-        composed[j] = newest.parents[parents[j]];
-      }
-      newest.parents = std::move(composed);
-    } else {
-      newest.parents = parents;
-    }
+    resample(newest);
   }
   return true;
 }
@@ -412,6 +403,12 @@ void Localizer::process(FilterState & state, const Entry & entry) const
   predict(state, entry.stamp);
   if (entry.model) {
     const ParticleSet & particles = state.filter.particles();
+    if (!particles.empty()) {
+      const SensorParams & sensor = sensors_[entry.sensor];
+      for (size_t layer = 0; layer < sensor.annealing_layer_num; ++layer) {
+        anneal(state, *entry.model, sensor);
+      }
+    }
     correct(
       state, entry.sensor,
       particles.empty() ? LogLikelihood{} : entry.model->computeLogLikelihood(particles));
@@ -454,7 +451,7 @@ void Localizer::correct(
   if (!needsResampling(state.filter)) {
     return;
   }
-  state.parents = state.filter.resample(*resampler_);
+  resample(state);
   if (params_.augmented_mcl.enabled) {
     double ratio = 0.0;
     for (const auto & statistics : state.recovery) {
@@ -466,6 +463,53 @@ void Localizer::correct(
       state.filter.injectRandomParticles(ratio, injection_sampler_);
     }
   }
+}
+
+void Localizer::anneal(
+  FilterState & state, const MeasurementModel & model, const SensorParams & sensor) const
+{
+  constexpr double kSurvivalRate = 0.5;  // effective sample size kept by a layer
+  constexpr double kMoveScale = 0.25;    // variance of the moves / variance of the cloud
+  const ParticleSet & particles = state.filter.particles();
+  const LogLikelihood log_likelihood = model.computeLogLikelihood(particles);
+  const Eigen::VectorXd tempered =
+    temperingExponent(log_likelihood.observation_num, sensor.max_effective_observation_num) *
+    log_likelihood.values;
+  // the largest exponent in (0, 1] whose weights keep kSurvivalRate of the particles effective
+  const Eigen::VectorXd & log_weights = particles.logWeights();
+  auto survival = [&](double exponent) {
+    const Eigen::VectorXd w = log_weights + exponent * tempered;
+    const Eigen::ArrayXd p = (w.array() - w.maxCoeff()).exp();
+    return p.sum() * p.sum() / p.square().sum() / static_cast<double>(p.size());
+  };
+  double exponent = 1.0;
+  if (survival(exponent) < kSurvivalRate) {
+    double low = 0.0;  // bisection, the survival falls with the exponent
+    double high = 1.0;
+    for (int i = 0; i < 20; ++i) {
+      const double middle = 0.5 * (low + high);
+      (survival(middle) >= kSurvivalRate ? low : high) = middle;
+    }
+    exponent = low;
+  }
+  state.filter.reweight(exponent * tempered);
+  resample(state);
+  const Matrix6d covariance = state.filter.estimate().covariance;
+  state.filter.expand(GaussianPoseSampler(kMoveScale * covariance));
+}
+
+void Localizer::resample(FilterState & state) const
+{
+  const std::vector<size_t> parents = state.filter.resample(*resampler_);
+  if (state.parents.empty()) {
+    state.parents = parents;
+    return;
+  }
+  std::vector<size_t> composed(parents.size());
+  for (size_t j = 0; j < parents.size(); ++j) {
+    composed[j] = state.parents[parents[j]];
+  }
+  state.parents = std::move(composed);
 }
 
 bool Localizer::needsResampling(const ParticleFilter & filter) const

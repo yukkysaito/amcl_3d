@@ -1,0 +1,7 @@
+# kitti_evaluation options for cm-level accuracy on KITTI 07 (see README, Evaluation):
+#   kitti_evaluation <dataset_dir> 07 config=tools/config/kitti_accurate.yaml [key=value ...]
+annealing: 5          # annealed particle filter layers per scan
+sigma: 0.1            # [m] likelihood field
+sample: 500           # scan points per update
+scan_matching: 1      # refine the estimate by GICP
+max_correction: 0.1   # [m] keep the particle estimate when GICP moves it farther

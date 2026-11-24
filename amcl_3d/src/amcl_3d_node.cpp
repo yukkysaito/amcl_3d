@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "amcl_3d/conversions.hpp"
+#include "amcl_3d_core/scan_matcher/gicp_scan_matcher.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 
 namespace amcl_3d
@@ -91,9 +92,13 @@ void Amcl3dNode::setMap(const PointCloud::Ptr & map)
     localizer_->setPointCloudLikelihood(likelihood);
     global_sampler_ =
       std::make_unique<GroundPoseSampler>(*map, params_.node.global_localization.sampler);
-    if (params_.node.scan_matching.enabled) {
-      localizer_->setScanMatcher(
-        std::make_unique<NdtScanMatcher>(map, params_.node.scan_matching.ndt));
+    const auto & matching = params_.node.scan_matching;
+    if (matching.enabled && matching.type == "gicp") {
+      auto matcher = std::make_unique<GicpScanMatcher>(map, matching.gicp);
+      RCLCPP_INFO(get_logger(), "%s", matcher->description().c_str());
+      localizer_->setScanMatcher(std::move(matcher));
+    } else if (matching.enabled) {
+      localizer_->setScanMatcher(std::make_unique<NdtScanMatcher>(map, matching.ndt));
     }
     RCLCPP_INFO(get_logger(), "map received: %zu points", map->size());
   } catch (const std::invalid_argument & e) {
