@@ -5,6 +5,7 @@
 
 #include "amcl_3d_core/measurement_model/measurement_model.hpp"
 #include "amcl_3d_core/motion_model/motion_model.hpp"
+#include "amcl_3d_core/particle_clustering.hpp"
 #include "amcl_3d_core/particle_set.hpp"
 #include "amcl_3d_core/pose_sampler/gaussian_pose_sampler.hpp"
 #include "amcl_3d_core/pose_sampler/pose_sampler.hpp"
@@ -68,11 +69,17 @@ public:
 
   /// Weighted mean (MMSE estimate) and covariance of the particles.
   PoseWithCovariance estimate() const;
+  /// Weighted mean and covariance of the cluster with the largest total weight (see
+  /// clusterParticles()). Equals estimate() for a unimodal cloud.
+  PoseWithCovariance bestClusterEstimate(const ParticleClustering::Params & params) const;
 
   const ParticleSet & particles() const { return particles_; }
   RandomGenerator & randomGenerator() { return rng_; }
 
 private:
+  /// Mean and covariance for `weights` that sum up to one.
+  PoseWithCovariance estimate(const Eigen::VectorXd & weights) const;
+
   ParticleSet particles_;
   RandomGenerator rng_;
 };

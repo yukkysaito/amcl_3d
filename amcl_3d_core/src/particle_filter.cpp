@@ -115,11 +115,42 @@ void ParticleFilter::expand(const GaussianPoseSampler & sampler)
 
 PoseWithCovariance ParticleFilter::estimate() const
 {
-  PoseWithCovariance estimate;
   if (particles_.empty()) {
-    return estimate;
+    return PoseWithCovariance{};
   }
+  return estimate(particles_.weights());
+}
+
+PoseWithCovariance ParticleFilter::bestClusterEstimate(
+  const ParticleClustering::Params & params) const
+{
+  if (particles_.empty()) {
+    return PoseWithCovariance{};
+  }
+  const ParticleClustering clustering = clusterParticles(particles_, params);
   const Eigen::VectorXd weights = particles_.weights();
+  std::vector<double> cluster_weights(clustering.cluster_num, 0.0);
+  for (size_t i = 0; i < particles_.size(); ++i) {
+    cluster_weights[clustering.labels[i]] += weights(static_cast<Eigen::Index>(i));
+  }
+  const size_t best = static_cast<size_t>(
+    std::max_element(cluster_weights.begin(), cluster_weights.end()) - cluster_weights.begin());
+  Eigen::VectorXd member_weights = Eigen::VectorXd::Zero(weights.size());
+  for (size_t i = 0; i < particles_.size(); ++i) {
+    if (clustering.labels[i] == best) {
+      member_weights(static_cast<Eigen::Index>(i)) = weights(static_cast<Eigen::Index>(i));
+    }
+  }
+  const double total = member_weights.sum();
+  if (!(total > 0.0)) {  // every weight underflowed: no cluster is more likely
+    return estimate(weights);
+  }
+  return estimate(member_weights / total);
+}
+
+PoseWithCovariance ParticleFilter::estimate(const Eigen::VectorXd & weights) const
+{
+  PoseWithCovariance estimate;
   estimate.pose.position = particles_.positions().transpose() * weights;
   estimate.pose.orientation = averageQuaternion(particles_.orientations(), weights);
 

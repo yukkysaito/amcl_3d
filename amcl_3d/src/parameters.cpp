@@ -56,6 +56,18 @@ ResamplerType toResamplerType(const std::string & name)
   throw std::invalid_argument("parameter 'resampling.type' must be 'systematic' or 'kld': " + name);
 }
 
+EstimateType toEstimateType(const std::string & name)
+{
+  if (name == "best_cluster") {
+    return EstimateType::kBestCluster;
+  }
+  if (name == "mean") {
+    return EstimateType::kMean;
+  }
+  throw std::invalid_argument(
+    "parameter 'estimate.type' must be 'best_cluster' or 'mean': " + name);
+}
+
 DelayedFusion toDelayedFusion(const std::string & name)
 {
   if (name == "replay") {
@@ -286,6 +298,17 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   kld.bin_size_yaw = declare<double>(
     node, "resampling.kld.bin_size_yaw", defaults.resampling.kld.bin_size_yaw,
     "Histogram bin size in yaw [rad]");
+
+  auto & estimate = p.estimate;
+  estimate.type = toEstimateType(declare<std::string>(
+    node, "estimate.type", "best_cluster",
+    "'best_cluster' (mean of the most likely cluster of particles) or 'mean' (of all particles)"));
+  estimate.clustering.bin_size_xyz = declare<double>(
+    node, "estimate.clustering.bin_size_xyz", defaults.estimate.clustering.bin_size_xyz,
+    "Clustering grid in x, y, z [m]; particles in touching cells form a cluster");
+  estimate.clustering.bin_size_yaw = declare<double>(
+    node, "estimate.clustering.bin_size_yaw", defaults.estimate.clustering.bin_size_yaw,
+    "Clustering grid in yaw [rad]");
 
   auto & filter = p.scan_filter;
   filter.min_range = declare<double>(node, "scan_filter.min_range", 1.0, "Minimum point range [m]");
