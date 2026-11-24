@@ -45,6 +45,13 @@ public:
     }
   }
 
+  /// Whether a twist starts in (from, to].
+  bool startsWithin(const Time & from, const Time & to) const
+  {
+    const auto next = twists_.upper_bound(from.nanoseconds);
+    return next != twists_.end() && next->first <= to.nanoseconds;
+  }
+
   bool empty() const { return twists_.empty(); }
   size_t size() const { return twists_.size(); }
   /// Stamp of the newest twist; requires !empty().

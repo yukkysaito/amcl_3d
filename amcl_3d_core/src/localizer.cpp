@@ -30,6 +30,12 @@ std::unique_ptr<Resampler> createResampler(const LocalizerParams::Resampling & p
   }
   throw std::invalid_argument("unknown resampler type");
 }
+
+bool isFinite(const PoseWithCovariance & pose)
+{
+  return pose.pose.position.allFinite() && pose.pose.orientation.coeffs().allFinite() &&
+         pose.covariance.allFinite();
+}
 }  // namespace
 
 const char * toString(LocalizerStatus status)
@@ -121,6 +127,9 @@ void Localizer::setPointCloudLikelihood(std::shared_ptr<const PointCloudLikeliho
 
 void Localizer::initialize(const PoseWithCovariance & initial_pose, const Time & stamp)
 {
+  if (!isFinite(initial_pose)) {
+    throw std::invalid_argument("Localizer: the initial pose is not finite");
+  }
   ParticleFilter filter = current().filter;  // continues the random sequence
   filter.initialize(initial_pose, params_.initial_particle_num);
   initialize(std::move(filter), stamp);
@@ -144,13 +153,21 @@ void Localizer::initialize(ParticleFilter filter, const Time & stamp)
 
 // ---- inputs
 
-bool Localizer::addTwist(const Twist & twist, const Time & stamp)
+LocalizerStatus Localizer::addTwist(const Twist & twist, const Time & stamp)
 {
-  twists_.insert(stamp, twist);
-  if (!initialized_) {
-    twists_.pruneBefore(Time{twists_.newestStamp().nanoseconds - kTwistBufferDurationNs});
-    return true;
+  // one NaN would spread to every particle and stay there until re-initialization
+  if (!twist.linear.allFinite() || !twist.angular.allFinite()) {
+    return LocalizerStatus::kInvalidMeasurement;
   }
+  if (!initialized_) {
+    twists_.insert(stamp, twist);
+    twists_.pruneBefore(Time{twists_.newestStamp().nanoseconds - kTwistBufferDurationNs});
+    return LocalizerStatus::kOk;
+  }
+  if (stamp < base_.stamp && twists_.startsWithin(stamp, base_.stamp)) {
+    return LocalizerStatus::kStaleStamp;
+  }
+  twists_.insert(stamp, twist);
   // Entries at `stamp` integrated up to it, so only later ones change.
   const auto first_affected = std::upper_bound(
     history_.begin(), history_.end(), stamp,
@@ -160,7 +177,18 @@ bool Localizer::addTwist(const Twist & twist, const Time & stamp)
     replayed_count_ += history_.size() - index;
     replayFrom(index);
   }
-  return !(stamp < base_.stamp);
+  // Without measurements, e.g. while the LiDAR is down, the history does not advance and the
+  // twists after it pile up. Predict up to the history length before the newest twist, so that
+  // late measurements still fit.
+  const int64_t max_delay_ns =
+    static_cast<int64_t>(std::llround(params_.max_measurement_delay * 1e9));
+  const Time newest = twists_.newestStamp();
+  if (
+    newest.nanoseconds - this->stamp().nanoseconds >
+    std::max(kTwistBufferDurationNs, 2 * max_delay_ns)) {
+    predict(Time{newest.nanoseconds - max_delay_ns});
+  }
+  return LocalizerStatus::kOk;
 }
 
 LocalizerStatus Localizer::predict(const Time & stamp)

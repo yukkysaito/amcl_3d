@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include <memory>
 #include <stdexcept>
 
@@ -39,10 +41,12 @@ TEST(Localizer, IntegratesBufferedTwistsPiecewise)
 {
   Localizer localizer(noiselessParams());
   localizer.initialize(PoseWithCovariance{}, seconds(0.0));
-  ASSERT_TRUE(localizer.addTwist(forward(1.0), seconds(0.0)));
-  ASSERT_TRUE(localizer.addTwist(forward(2.0), seconds(1.0)));
-  ASSERT_TRUE(localizer.addTwist(forward(0.0), seconds(3.0)));
-  ASSERT_TRUE(localizer.addTwist(forward(5.0), seconds(10.0)));  // ahead of the next prediction
+  ASSERT_EQ(localizer.addTwist(forward(1.0), seconds(0.0)), LocalizerStatus::kOk);
+  ASSERT_EQ(localizer.addTwist(forward(2.0), seconds(1.0)), LocalizerStatus::kOk);
+  ASSERT_EQ(localizer.addTwist(forward(0.0), seconds(3.0)), LocalizerStatus::kOk);
+  ASSERT_EQ(
+    localizer.addTwist(forward(5.0), seconds(10.0)),
+    LocalizerStatus::kOk);  // ahead of the next prediction
 
   ASSERT_EQ(localizer.predict(seconds(4.0)), LocalizerStatus::kOk);
   EXPECT_NEAR(localizer.estimate().pose.position.x(), 1.0 * 1.0 + 2.0 * 2.0, 1e-9);
@@ -69,8 +73,11 @@ TEST(Localizer, RejectsOutOfOrderInputs)
 
   localizer.initialize(PoseWithCovariance{}, seconds(5.0));
   EXPECT_EQ(localizer.predict(seconds(4.0)), LocalizerStatus::kStaleStamp);
-  EXPECT_TRUE(localizer.addTwist(forward(1.0), seconds(6.0)));
-  EXPECT_FALSE(localizer.addTwist(forward(1.0), seconds(4.5)));  // older than the history
+  EXPECT_EQ(localizer.addTwist(forward(1.0), seconds(6.0)), LocalizerStatus::kOk);
+  // older than the history, but still the twist at its start
+  EXPECT_EQ(localizer.addTwist(forward(1.0), seconds(4.8)), LocalizerStatus::kOk);
+  // superseded by the one at 4.8 s before the history starts: never used
+  EXPECT_EQ(localizer.addTwist(forward(1.0), seconds(4.5)), LocalizerStatus::kStaleStamp);
 
   localizer.setPointCloudLikelihood(std::make_shared<LikelihoodField>(
     std::make_shared<KdTreeMap>(test::makeRoomMap()), LikelihoodField::Params{}));
@@ -426,6 +433,57 @@ TEST(Localizer, EstimateStaysOnTheMostLikelyMode)
       }
     }
   }
+}
+
+TEST(Localizer, RejectsNonFiniteInputs)
+{
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  Localizer localizer(noiselessParams());
+  PoseWithCovariance invalid;
+  invalid.pose.position.x() = nan;
+  EXPECT_THROW(localizer.initialize(invalid, seconds(0.0)), std::invalid_argument);
+  EXPECT_FALSE(localizer.isInitialized());
+
+  localizer.initialize(PoseWithCovariance{}, seconds(0.0));
+  ASSERT_EQ(localizer.addTwist(forward(1.0), seconds(0.0)), LocalizerStatus::kOk);
+  Twist bad = forward(1.0);
+  bad.angular.z() = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(localizer.addTwist(bad, seconds(0.5)), LocalizerStatus::kInvalidMeasurement);
+  bad = forward(nan);
+  EXPECT_EQ(localizer.addTwist(bad, seconds(0.6)), LocalizerStatus::kInvalidMeasurement);
+
+  PoseWithCovariance observation;
+  observation.covariance = Matrix6d::Identity();
+  observation.covariance(0, 0) = nan;
+  EXPECT_EQ(
+    localizer.updateWithPose(observation, seconds(1.0)), LocalizerStatus::kInvalidMeasurement);
+  observation.covariance = Matrix6d::Identity();
+  observation.pose.orientation.w() = nan;
+  EXPECT_EQ(
+    localizer.updateWithPose(observation, seconds(1.0)), LocalizerStatus::kInvalidMeasurement);
+
+  // the rejected inputs left no trace: 1 m/s for 1 s
+  ASSERT_EQ(localizer.predict(seconds(1.0)), LocalizerStatus::kOk);
+  EXPECT_NEAR(localizer.estimate().pose.position.x(), 1.0, 1e-9);
+}
+
+TEST(Localizer, TwistsStayBoundedWithoutMeasurements)
+{
+  LocalizerParams params = noiselessParams();
+  params.max_measurement_delay = 1.0;
+  Localizer localizer(params);
+  localizer.initialize(PoseWithCovariance{}, seconds(0.0));
+  // 100 Hz odometry for 60 s, no measurement (e.g. the LiDAR is down)
+  for (int k = 0; k < 6000; ++k) {
+    ASSERT_EQ(localizer.addTwist(forward(1.0), seconds(0.01 * k)), LocalizerStatus::kOk);
+    EXPECT_LE(localizer.bufferedTwistCount(), 2100u);  // about twice the 10 s buffer at most
+  }
+  // the filter followed on its own and still takes a measurement after the outage, in time
+  EXPECT_GT(localizer.stamp().seconds(), 45.0);
+  ASSERT_EQ(localizer.predict(seconds(60.0)), LocalizerStatus::kOk);
+  EXPECT_NEAR(localizer.estimate().pose.position.x(), 60.0, 1e-6);
+  // and one up to max_measurement_delay late
+  EXPECT_EQ(localizer.predict(seconds(59.2)), LocalizerStatus::kOk);
 }
 
 TEST(Localizer, PoseUpdateConvergesToObservation)

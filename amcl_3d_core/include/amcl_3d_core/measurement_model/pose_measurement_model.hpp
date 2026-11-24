@@ -10,7 +10,7 @@ namespace amcl_3d
 class PoseMeasurementModel : public MeasurementModel
 {
 public:
-  /// `observation.covariance` must be positive definite.
+  /// `observation` must be finite and its covariance positive definite (std::invalid_argument).
   explicit PoseMeasurementModel(const PoseWithCovariance & observation);
 
   LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override;
