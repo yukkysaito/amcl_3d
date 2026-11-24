@@ -12,6 +12,7 @@
 #include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/ndt_likelihood.hpp"
 #include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
+#include "amcl_3d_core/scan_matcher/gicp_scan_matcher.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "test_utils.hpp"
 
@@ -321,6 +322,60 @@ TEST_F(RoomLocalizationTest, ScanMatchingRefinesTheEstimate)
 
   params_.scan_matching.feedback_stddev(0) = 0.0;
   EXPECT_THROW(Localizer{params_}, std::invalid_argument);
+}
+
+TEST_F(RoomLocalizationTest, AnnealingConcentratesTheParticlesWhereTheScanFits)
+{
+  // Odometry with an error (0.5 m/s while the scan stays put) and a noisy motion model: each
+  // prediction pushes the cloud 5 cm off and scatters it, and the tempered likelihood alone pulls
+  // the estimate back only partly. Annealing moves the cloud to where the scan fits.
+  params_.scan_filter.voxel_size = 0.3;
+  params_.point_cloud_sensor.max_effective_observation_num = 10;
+  params_.motion_model.twist = TwistMotionModel::Params{0.0, 0.3, 0.0, 0.05};
+  auto meanError = [this](size_t annealing_layer_num) {
+    double sum = 0.0;
+    int count = 0;
+    for (const uint64_t seed : {1, 2, 3, 4, 5}) {
+      params_.random_seed = seed;
+      params_.point_cloud_sensor.annealing_layer_num = annealing_layer_num;
+      Localizer localizer(params_);
+      localizer.setPointCloudLikelihood(distanceFieldLikelihood());
+      localizer.initialize(
+        initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()),
+        seconds(time_));
+      Twist odometry_error;
+      odometry_error.linear.x() = 0.5;
+      localizer.addTwist(odometry_error, seconds(time_));
+      for (int i = 0; i < 30; ++i) {
+        runUpdates(localizer, 1);
+        if (i >= 10) {
+          sum += positionError(localizer);
+          ++count;
+        }
+      }
+    }
+    return sum / count;
+  };
+  const double plain = meanError(0);
+  const double annealed = meanError(3);
+  EXPECT_LT(annealed, 0.5 * plain) << "plain " << plain << " m, annealed " << annealed << " m";
+}
+
+TEST_F(RoomLocalizationTest, GicpScanMatchingRefinesTheEstimate)
+{
+  params_.scan_filter.voxel_size = 0.2;
+  Localizer localizer(params_);
+  localizer.setPointCloudLikelihood(distanceFieldLikelihood());
+  localizer.setScanMatcher(std::make_unique<GicpScanMatcher>(map_, GicpScanMatcher::Params{}));
+  localizer.initialize(
+    initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
+  runUpdates(localizer, 20);
+  ASSERT_TRUE(localizer.refinedPose().has_value());
+  const Pose & refined = *localizer.refinedPose();
+  EXPECT_LT((refined.position - true_pose_.position).norm(), 0.005);
+  EXPECT_LT(refined.orientation.angularDistance(true_pose_.orientation), 0.05 * M_PI / 180.0);
+  // and more precise than the particles alone
+  EXPECT_LT((refined.position - true_pose_.position).norm(), positionError(localizer));
 }
 
 TEST_F(RoomLocalizationTest, GlobalLocalizationWithKldSampling)

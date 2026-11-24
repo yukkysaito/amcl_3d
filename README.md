@@ -100,7 +100,11 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Scan preprocessing**: range / height crop, voxel grid, random subsampling
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
 - **Recovery**: augmented MCL, expansion resetting (statistics per sensor), global localization
-- **Refinement**: optional NDT scan matching of the estimate (with optional feedback)
+- **Annealing**: annealed particle filter layers before each scan update
+  (`scan_annealing_layers`), which gather the cloud where the scan fits rather than where the
+  motion model scattered it
+- **Refinement**: optional scan matching of the estimate, GICP (default, cm-level) or NDT (with
+  optional feedback)
 - **Estimate**: mean and covariance (quaternion averaging) of the most likely cluster of particles
   (`estimate.type`), so that a multimodal cloud, e.g. during global localization, yields a pose on
   its strongest mode rather than between the modes; plus `map` -> `odom`
@@ -122,7 +126,7 @@ Localizer                      time handling, resampling policy, recovery, refin
  │           └─ GicpLikelihood     on GaussianVoxelMap, with scan covariances
  ├─ Resampler                  SystematicResampler, KldResampler
  ├─ ScanFilter
- └─ ScanMatcher                NdtScanMatcher
+ └─ ScanMatcher                GicpScanMatcher, NdtScanMatcher
 PoseSampler                    GaussianPoseSampler, GroundPoseSampler (global localization)
 createMotionModel()            builds the MotionModel selected by MotionModelParams
 createPointCloudLikelihood()   builds the likelihood and its map selected by
@@ -242,6 +246,43 @@ parallel on `thread_num` threads, and the rest is resampling and the estimate on
 Using every hardware thread (`thread_num: 0`, 32 threads) was slower than 4-16 threads
 (6.2 ms): idle OpenMP threads spin on the cores the rest of the update runs on. Setting
 `OMP_WAIT_POLICY=passive` avoids that.
+
+### Centimeter-level accuracy
+
+The options of [`kitti_accurate.yaml`](amcl_3d_core/tools/config/kitti_accurate.yaml)
+(`kitti_evaluation <dataset_dir> 07 config=amcl_3d_core/tools/config/kitti_accurate.yaml`), added
+one at a time to the defaults (500 particles, default motion noise), 3 seeds:
+
+| configuration | translation RMSE [m] | mean [m] | p95 [m] | max [m] | frames > 5 cm | update mean / p95 [ms] |
+|---|---|---|---|---|---|---|
+| defaults | 0.092-0.105 | 0.080-0.089 | 0.16-0.19 | 0.28-0.41 | 73-78 % | 1.9 / 2.7 |
+| + 5 annealing layers | 0.061-0.062 | 0.053 | 0.11 | 0.16-0.20 | 45-46 % | 5.6 / 6.3 |
+| + `sigma` 0.1 m, 500 scan points | 0.043-0.045 | 0.036-0.038 | 0.08-0.09 | 0.18 | 20-24 % | 11.6 / 13.0 |
+| + GICP refinement (`max_correction` 0.1 m) | **0.034-0.038** | **0.026-0.028** | **0.06-0.07** | 0.18-0.23 | **9-10 %** | 30.7 / 51.3 |
+| the same without annealing | 0.129-0.132 | | 0.25 | 0.40-0.52 | | |
+
+- **Annealing** (`SensorParams::annealing_layer_num`, Deutscher et al., 2000): the default motion
+  noise spreads the particles by ~0.5 m per 0.2 s at 10 m/s, 8 times the error of the simulated
+  odometry, so few particles land where the scan fits. Each layer weights the cloud by the
+  likelihood raised to the largest exponent that keeps half of the particles effective, resamples
+  and moves the particles by a Gaussian with a quarter of the cloud's covariance. Each part
+  matters (5 layers, `sigma` 0.1, 500 points): without the moves 0.15 m, with the exponent fixed to
+  1 0.093 m, moves as wide as the cloud 0.20 m. Annealing reaches what matching the motion noise to
+  the odometry does by hand (0.042-0.046 m), without knowing the odometry error.
+- **GICP refinement** (`GicpScanMatcher`): plane-to-plane GICP against the map points with their
+  neighborhood covariances, with a Cauchy kernel. Registered from the ground truth offset by
+  0.3 m and 1.7 deg, it lands within 2 cm (median); a GICP on 1 m voxel distributions stayed 5-10 cm
+  off and PCL's NDT ~0.25 m,
+  and NDT refinement instead of GICP gives 0.041-0.042 m. Refinements farther than
+  `max_correction` from the particle estimate are rejected: without annealing the estimate is too
+  far off for most of them (last row).
+- **The reference itself**: registering every localized scan to the map from its ground truth pose
+  (PCL GICP) moves it by 0.023 m RMSE (p95 0.039 m), and by 0.1-0.2 m around t = 110 s, where the
+  drive closes its loop and the map holds both passes. Of the frames above 5 cm with the full
+  configuration, about half lie where the ground truth disagrees with the map by more than 3 cm;
+  on the others, 4-6 % of the frames exceed 5 cm.
+
+The node ships with `scan_annealing_layers: 5` in `amcl_3d.param.yaml` (the library default is 0).
 
 ### Tempering
 

@@ -346,6 +346,27 @@ TEST_F(Amcl3dNodeTest, ScanMatchingRefinesPublishedPose)
   EXPECT_LT(orientationError(), 0.5 * M_PI / 180.0);
 }
 
+TEST_F(Amcl3dNodeTest, NdtScanMatchingRefinesPublishedPose)
+{
+  start(
+    {{"scan_matching.enabled", true},
+     {"scan_matching.type", "ndt"},
+     {"scan_max_effective_points", 0}});
+  publishInitialPose();
+  publishScans(20);
+  EXPECT_LT(positionError(), 0.02);
+  EXPECT_LT(orientationError(), 0.5 * M_PI / 180.0);
+}
+
+TEST_F(Amcl3dNodeTest, LocalizesWithAnnealing)
+{
+  start({{"scan_annealing_layers", 3}});
+  publishInitialPose();
+  publishScans(20);
+  EXPECT_LT(positionError(), 0.1);
+  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
+}
+
 TEST_F(Amcl3dNodeTest, LocalizesWithNdtLikelihood)
 {
   start({{"point_cloud_likelihood.type", "ndt"}});
@@ -368,6 +389,13 @@ TEST_F(Amcl3dNodeTest, RejectsUnknownLikelihoodAtStartup)
 {
   rclcpp::NodeOptions options;
   options.parameter_overrides({{"point_cloud_likelihood.type", "icp"}});
+  EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);
+}
+
+TEST_F(Amcl3dNodeTest, RejectsUnknownScanMatcherAtStartup)
+{
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({{"scan_matching.type", "icp"}});
   EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);
 }
 

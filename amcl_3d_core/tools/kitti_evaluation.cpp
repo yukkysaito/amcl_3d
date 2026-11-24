@@ -13,7 +13,9 @@
 //   twist is reported as a baseline.
 // - The filter is initialized off the ground truth by `init_offset` [m] and `init_yaw_offset`.
 //
-// Options (defaults in Config): likelihood=likelihood_field|ndt|gicp sigma=<m>
+// Options (defaults in Config), also read from config=<file> with one `key: value` per line
+// (command line options take precedence):
+// likelihood=likelihood_field|ndt|gicp sigma=<m>
 // map=distance_field|kdtree device=cpu|cuda resolution=<m> (likelihood field)
 // voxel_resolution=<m> voxel_neighbors=0|1 (NDT, GICP)
 // effective=<n> (max effective scan points, 0: no tempering) max_delay=<s>
@@ -21,8 +23,10 @@
 // late_fusion=replay|reweight estimate=cluster|mean
 // init_offset=<m> init_yaw_offset=<rad>
 // threads=<n> motion=twist|vehicle odometry=full|wheel base_x=<m> base_pitch=<rad>
-// resampler=systematic|kld
-// particles=<n> sample=<n> scan_matching=0|1 expansion_reset=0|1 seed=<n> frames=<n>
+// resampler=systematic|kld annealing=<layers>
+// particles=<n> sample=<n> scan_matching=0|1 scan_matcher=gicp|ndt max_correction=<m>
+// expansion_reset=0|1 seed=<n> frames=<n>
+// linear_noise_scale= linear_noise_bias= angular_noise_scale= angular_noise_bias= (twist motion model)
 // output=<trajectory.csv>
 #include <algorithm>
 #include <chrono>
@@ -44,6 +48,7 @@
 #include "amcl_3d_core/math.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/point_cloud_likelihood_factory.hpp"
 #include "amcl_3d_core/scan_filter.hpp"
+#include "amcl_3d_core/scan_matcher/gicp_scan_matcher.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "kitti_dataset.hpp"
 #include "statistics.hpp"
@@ -82,6 +87,10 @@ struct Config
   size_t particles = 500;
   size_t sample = 200;
   bool scan_matching = false;
+  size_t annealing = 0;  // point_cloud_sensor.annealing_layer_num
+  std::string scan_matcher = "gicp";
+  double max_correction = LocalizerParams{}.scan_matching.max_correction;  // [m]
+  TwistMotionModel::Params twist_noise;
   bool expansion_reset = false;
   uint64_t seed = 1;
   size_t frames = 0;       // 0: all
@@ -114,6 +123,29 @@ Config parseConfig(int argc, char ** argv)
     }
     kv[arg.substr(0, eq)] = arg.substr(eq + 1);
   }
+  // options from a file of `key: value` lines (# comments); the command line takes precedence
+  if (const auto it = kv.find("config"); it != kv.end()) {
+    std::ifstream file(it->second);
+    if (!file) {
+      throw std::invalid_argument("cannot read config: " + it->second);
+    }
+    kv.erase(it);
+    std::string line;
+    while (std::getline(file, line)) {
+      line = line.substr(0, line.find('#'));
+      const auto colon = line.find(':');
+      if (colon == std::string::npos) {
+        continue;
+      }
+      std::istringstream key_stream(line.substr(0, colon)), value_stream(line.substr(colon + 1));
+      std::string key, value;
+      key_stream >> key;
+      value_stream >> value;
+      if (!key.empty() && !value.empty()) {
+        kv.emplace(key, value);  // does not replace a command line option
+      }
+    }
+  }
   auto take = [&kv](const std::string & key, auto & value) {
     const auto it = kv.find(key);
     if (it == kv.end()) {
@@ -139,6 +171,13 @@ Config parseConfig(int argc, char ** argv)
   take("particles", c.particles);
   take("sample", c.sample);
   take("scan_matching", c.scan_matching);
+  take("annealing", c.annealing);
+  take("scan_matcher", c.scan_matcher);
+  take("max_correction", c.max_correction);
+  take("linear_noise_scale", c.twist_noise.linear_noise_scale);
+  take("linear_noise_bias", c.twist_noise.linear_noise_bias);
+  take("angular_noise_scale", c.twist_noise.angular_noise_scale);
+  take("angular_noise_bias", c.twist_noise.angular_noise_bias);
   take("expansion_reset", c.expansion_reset);
   take("seed", c.seed);
   take("frames", c.frames);
@@ -213,6 +252,7 @@ int main(int argc, char ** argv)
     config.resampler == "kld" ? ResamplerType::kKld : ResamplerType::kSystematic;
   params.expansion_reset.enabled = config.expansion_reset;
   params.point_cloud_sensor.max_effective_observation_num = config.effective;
+  params.point_cloud_sensor.annealing_layer_num = config.annealing;
   params.max_measurement_delay = config.max_delay;
   if (config.late_fusion == "reweight") {
     params.point_cloud_sensor.delayed_fusion = DelayedFusion::kReweight;
@@ -225,7 +265,9 @@ int main(int argc, char ** argv)
     throw std::invalid_argument("unknown estimate: " + config.estimate);
   }
   params.motion_model.type = toMotionModelType(config.motion);
+  params.motion_model.twist = config.twist_noise;
   params.motion_model.twist.thread_num = config.threads;
+  params.scan_matching.max_correction = config.max_correction;
   params.motion_model.vehicle.thread_num = config.threads;
   Localizer localizer(params);
   PointCloudLikelihoodParams likelihood_params;
@@ -246,7 +288,15 @@ int main(int argc, char ** argv)
   const auto likelihood = createPointCloudLikelihood(map, likelihood_params);
   localizer.setPointCloudLikelihood(likelihood);
   if (config.scan_matching) {
-    localizer.setScanMatcher(std::make_unique<NdtScanMatcher>(map, NdtScanMatcher::Params{}));
+    if (config.scan_matcher == "gicp") {
+      GicpScanMatcher::Params matcher_params;
+      matcher_params.thread_num = config.threads;
+      localizer.setScanMatcher(std::make_unique<GicpScanMatcher>(map, matcher_params));
+    } else if (config.scan_matcher == "ndt") {
+      localizer.setScanMatcher(std::make_unique<NdtScanMatcher>(map, NdtScanMatcher::Params{}));
+    } else {
+      throw std::invalid_argument("unknown scan_matcher: " + config.scan_matcher);
+    }
   }
   const double map_seconds =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - map_start).count();
@@ -396,18 +446,20 @@ int main(int argc, char ** argv)
   std::printf(
     "map=%s res=%.2f device=%s threads=%zu motion=%s odometry=%s base_x=%.2f base_pitch=%.4f "
     "resampler=%s "
-    "particles=%zu sample=%zu effective=%zu ndt=%d reset=%d late_every=%zu late_by=%zu "
+    "particles=%zu sample=%zu effective=%zu matching=%s reset=%d late_every=%zu late_by=%zu "
     "late_fusion=%s estimate=%s seed=%lu\n",
     config.map_type.c_str(), config.map_resolution, config.device.c_str(), config.threads,
     config.motion.c_str(), config.odometry.c_str(), config.base_x, config.base_pitch,
     config.resampler.c_str(), config.particles, config.sample, config.effective,
-    config.scan_matching, config.expansion_reset, config.late_every, config.late_by,
-    config.late_fusion.c_str(), config.estimate.c_str(), static_cast<unsigned long>(config.seed));
+    config.scan_matching ? config.scan_matcher.c_str() : "off", config.expansion_reset,
+    config.late_every, config.late_by, config.late_fusion.c_str(), config.estimate.c_str(),
+    static_cast<unsigned long>(config.seed));
   std::printf(
     "  map: %zu points, built in %.1f s, %s\n", map->size(), map_seconds,
     likelihood->description().c_str());
   std::printf(
-    "  frames: %zu evaluated, lost (>1 m): %zu, refined by NDT: %zu, replayed updates: %zu, "
+    "  frames: %zu evaluated, lost (>1 m): %zu, refined by scan matching: %zu, replayed updates: "
+    "%zu, "
     "reweighted scans: %zu\n",
     filter_errors.translation.size(), lost, refined_count, localizer.replayedCount(),
     localizer.reweightedCount());
