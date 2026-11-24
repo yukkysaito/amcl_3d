@@ -47,6 +47,7 @@ public:
 
   void predict(
     const Twist & twist, double dt, ParticleSet & particles, RandomGenerator & rng) const override;
+  std::optional<LinearizedMotion> linearize(const Twist & twist, double dt) const override;
 
 private:
   Params params_;

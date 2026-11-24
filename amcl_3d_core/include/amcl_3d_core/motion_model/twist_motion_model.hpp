@@ -33,6 +33,7 @@ public:
 
   void predict(
     const Twist & twist, double dt, ParticleSet & particles, RandomGenerator & rng) const override;
+  std::optional<LinearizedMotion> linearize(const Twist & twist, double dt) const override;
 
   /// Moves a single pose without noise.
   static Pose integrate(const Pose & pose, const Twist & twist, double dt);

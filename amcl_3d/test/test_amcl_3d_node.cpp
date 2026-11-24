@@ -358,6 +358,22 @@ TEST_F(Amcl3dNodeTest, NdtScanMatchingRefinesPublishedPose)
   EXPECT_LT(orientationError(), 0.5 * M_PI / 180.0);
 }
 
+TEST_F(Amcl3dNodeTest, LocalizesWithTemperedSmc)
+{
+  start({{"scan_tempered_smc.enabled", true}, {"scan_max_effective_points", 100}});
+  publishInitialPose();
+  publishScans(20);
+  EXPECT_LT(positionError(), 0.1);
+  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
+}
+
+TEST_F(Amcl3dNodeTest, RejectsAnnealingWithTemperedSmc)
+{
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({{"scan_tempered_smc.enabled", true}, {"scan_annealing_layers", 3}});
+  EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);
+}
+
 TEST_F(Amcl3dNodeTest, LocalizesWithAnnealing)
 {
   start({{"scan_annealing_layers", 3}});

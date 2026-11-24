@@ -36,6 +36,15 @@
     # CPU, 0.03 ms with point_cloud_likelihood.likelihood_field.map.device: cuda;
     # 5 layers: KITTI 07 0.092-0.105 -> 0.043-0.045 m (sigma 0.1, 500 points). 0: off.
     scan_annealing_layers: 5
+    # Adaptive tempered SMC with MCMC moves instead of annealing (set scan_annealing_layers: 0):
+    # the scan enters in as many stages as its sharpness needs, the moves keep the motion prior, so
+    # the particle covariance is consistent (NEES 2.8 / 3) and a sharper likelihood can be used
+    # (scan_max_effective_points: 100). KITTI, 6 sequences: 0.081 -> 0.071 m at 8.4 instead of 6
+    # likelihood evaluations per scan (README).
+    scan_tempered_smc:
+      enabled: false
+      max_stages: 8  # the last one takes the rest of the likelihood
+      mcmc_steps: 1  # per stage
     # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
     # at their own time by replaying the newer scans [s]; costs one particle set per scan of memory.
     max_measurement_delay: 1.0

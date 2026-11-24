@@ -11,6 +11,7 @@
 #include "amcl_3d_core/pose_sampler/pose_sampler.hpp"
 #include "amcl_3d_core/random.hpp"
 #include "amcl_3d_core/resampler/resampler.hpp"
+#include "amcl_3d_core/transition_prior.hpp"
 
 namespace amcl_3d
 {
@@ -74,7 +75,15 @@ public:
   PoseWithCovariance bestClusterEstimate(const ParticleClustering::Params & params) const;
 
   const ParticleSet & particles() const { return particles_; }
+  /// For particle moves (MoveKernel); keeps the weights, ancestry and transition prior.
+  ParticleSet & mutableParticles() { return particles_; }
   RandomGenerator & randomGenerator() { return rng_; }
+
+  /// Motion prior of the particles since the last startTransitionPrior() (see TransitionPrior):
+  /// predict() propagates it, resample() selects it.
+  const TransitionPrior & transitionPrior() const { return prior_; }
+  /// Starts a new prediction interval at the current particles (after a measurement).
+  void startTransitionPrior() { prior_.startAt(particles_); }
 
 private:
   /// Mean and covariance for `weights` that sum up to one.
@@ -82,6 +91,7 @@ private:
 
   ParticleSet particles_;
   RandomGenerator rng_;
+  TransitionPrior prior_;
 };
 
 }  // namespace amcl_3d

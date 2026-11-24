@@ -416,6 +416,49 @@ TEST(AsynchronousLocalizer, DelayedScansGiveTheResultOfTimeOrder)
   }
 }
 
+TEST(AsynchronousLocalizer, ScansWhoseUpdatesMoveParticlesAreReplayedNotReweighted)
+{
+  // Reweighting a late scan scores the descendants of the particles at its time; particles moved
+  // by MCMC (tempered SMC) or annealing are no such descendants, so the late scan is replayed.
+  const PointCloud::Ptr map = test::makeRoomMap();
+  Pose true_pose;
+  true_pose.position = Eigen::Vector3d(3.0, 2.0, 0.0);
+  true_pose.orientation = test::yawQuaternion(0.3);
+  const PointCloud::Ptr scan = test::makeScan(*map, true_pose);
+  const auto likelihood = std::make_shared<LikelihoodField>(
+    std::make_shared<DistanceFieldMap>(*map, DistanceFieldMap::Params{0.1, 1.0}),
+    LikelihoodField::Params{});
+  std::vector<Event> events;
+  events.push_back(
+    {0.0, 0.0, [](Localizer & l, const Time & s) { l.addTwist(Twist{}, s); }});  // noise only
+  for (int k = 1; k <= 9; ++k) {
+    const double t = 0.1 * k;
+    events.push_back({t, k % 3 == 0 ? t + 0.25 : t, [&scan](Localizer & l, const Time & s) {
+                        ASSERT_EQ(l.updateWithPointCloud(*scan, s), LocalizerStatus::kOk);
+                      }});
+  }
+  const auto setup = [&](Localizer & l) { l.setPointCloudLikelihood(likelihood); };
+  for (const std::string update : {"importance", "annealing", "tempered_smc"}) {
+    LocalizerParams params = noisyParams(5);
+    params.scan_filter.voxel_size = 0.3;
+    params.scan_sample_num = 100;
+    params.point_cloud_sensor.delayed_fusion = DelayedFusion::kReweight;
+    params.point_cloud_sensor.annealing_layer_num = update == "annealing" ? 2 : 0;
+    params.point_cloud_sensor.tempered_smc.enabled = update == "tempered_smc";
+    const Localizer in_order = run(
+      params, events, [](const Event & e) { return e.stamp; }, setup, true_pose);
+    const Localizer delayed = run(
+      params, events, [](const Event & e) { return e.arrival; }, setup, true_pose);
+    if (update == "importance") {
+      EXPECT_GT(delayed.reweightedCount(), 0u);
+      continue;
+    }
+    EXPECT_EQ(delayed.reweightedCount(), 0u) << update;
+    EXPECT_GT(delayed.replayedCount(), 0u) << update;
+    expectIdentical(delayed, in_order);
+  }
+}
+
 TEST(AsynchronousLocalizer, OnlySensorsThatDriveRecoveryTriggerResets)
 {
   // an observation that no particle explains (per-observation likelihood e^-50)

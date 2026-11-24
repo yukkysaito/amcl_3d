@@ -27,8 +27,11 @@
 // particles=<n> sample=<n> scan_matching=0|1 scan_matcher=gicp|ndt max_correction=<m>
 // expansion_reset=0|1 seed=<n> frames=<n>
 // linear_noise_scale= linear_noise_bias= angular_noise_scale= angular_noise_bias= (twist motion model)
-// output=<trajectory.csv>
+// update=importance|annealing|tsmc max_stages=<n> mcmc_steps=<n> (scan update, tsmc: tempered SMC)
+// kidnap_frame=<frame> kidnap_offset=<m> (re-initialize off the truth to measure recovery)
+// output=<trajectory.csv> summary=<file> (one JSON line of metrics, appended)
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -50,6 +53,7 @@
 #include "amcl_3d_core/scan_filter.hpp"
 #include "amcl_3d_core/scan_matcher/gicp_scan_matcher.hpp"
 #include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
+#include "amcl_3d_core/update/tempered_smc_update.hpp"
 #include "kitti_dataset.hpp"
 #include "statistics.hpp"
 
@@ -88,6 +92,13 @@ struct Config
   size_t sample = 200;
   bool scan_matching = false;
   size_t annealing = 0;  // point_cloud_sensor.annealing_layer_num
+  std::string update;    // importance | annealing (annealing layers, 5 if 0) | tsmc
+  size_t max_stages = TemperedSmcUpdate::Params{}.max_stages;
+  size_t mcmc_steps = TemperedSmcUpdate::Params{}.mcmc_steps;
+  std::string summary;
+  size_t kidnap_frame = 0;       // 0: none
+  double kidnap_offset = 5.0;    // [m] along x
+  double converged_error = 0.5;  // [m]
   std::string scan_matcher = "gicp";
   double max_correction = LocalizerParams{}.scan_matching.max_correction;  // [m]
   TwistMotionModel::Params twist_noise;
@@ -172,6 +183,13 @@ Config parseConfig(int argc, char ** argv)
   take("sample", c.sample);
   take("scan_matching", c.scan_matching);
   take("annealing", c.annealing);
+  take("update", c.update);
+  take("max_stages", c.max_stages);
+  take("mcmc_steps", c.mcmc_steps);
+  take("summary", c.summary);
+  take("kidnap_frame", c.kidnap_frame);
+  take("kidnap_offset", c.kidnap_offset);
+  take("converged_error", c.converged_error);
   take("scan_matcher", c.scan_matcher);
   take("max_correction", c.max_correction);
   take("linear_noise_scale", c.twist_noise.linear_noise_scale);
@@ -252,7 +270,17 @@ int main(int argc, char ** argv)
     config.resampler == "kld" ? ResamplerType::kKld : ResamplerType::kSystematic;
   params.expansion_reset.enabled = config.expansion_reset;
   params.point_cloud_sensor.max_effective_observation_num = config.effective;
-  params.point_cloud_sensor.annealing_layer_num = config.annealing;
+  if (config.update == "tsmc") {
+    auto & smc = params.point_cloud_sensor.tempered_smc;
+    smc.enabled = true;
+    smc.max_stages = config.max_stages;
+    smc.mcmc_steps = config.mcmc_steps;
+    smc.thread_num = config.threads;
+  } else if (config.update == "annealing" || (config.update.empty() && config.annealing > 0)) {
+    params.point_cloud_sensor.annealing_layer_num = config.annealing > 0 ? config.annealing : 5;
+  } else if (!config.update.empty() && config.update != "importance") {
+    throw std::invalid_argument("unknown update: " + config.update);
+  }
   params.max_measurement_delay = config.max_delay;
   if (config.late_fusion == "reweight") {
     params.point_cloud_sensor.delayed_fusion = DelayedFusion::kReweight;
@@ -345,6 +373,9 @@ int main(int argc, char ** argv)
     bool refined;
     double ms;
     size_t particle_num;
+    PoseWithCovariance filter_estimate;  // of the particles (NEES)
+    UpdateStatistics statistics;
+    double unique_ratio;  // distinct particles / N after the update (diversity)
   };
   std::map<size_t, Output> outputs;
   std::map<int64_t, size_t> frame_of_stamp;
@@ -361,9 +392,25 @@ int main(int argc, char ** argv)
     }
     const size_t newest = frame_of_stamp.at(localizer.stamp().nanoseconds);
     const auto refined = localizer.refinedPose();
+    const ParticleSet & particles = localizer.particles();
+    std::vector<std::array<double, 3>> positions(particles.size());
+    for (size_t i = 0; i < particles.size(); ++i) {
+      const auto row = particles.positions().row(static_cast<Eigen::Index>(i));
+      positions[i] = {row(0), row(1), row(2)};
+    }
+    std::sort(positions.begin(), positions.end());
+    const size_t unique =
+      static_cast<size_t>(std::unique(positions.begin(), positions.end()) - positions.begin());
+    const PoseWithCovariance filter_estimate = localizer.estimate();
     outputs[newest] = Output{
-      refined ? *refined : localizer.estimate().pose, dead_reckoning_at[newest],
-      refined.has_value(), ms, localizer.particles().size()};
+      refined ? *refined : filter_estimate.pose,
+      dead_reckoning_at[newest],
+      refined.has_value(),
+      ms,
+      particles.size(),
+      filter_estimate,
+      localizer.lastUpdateStatistics(),
+      static_cast<double>(unique) / static_cast<double>(std::max<size_t>(particles.size(), 1))};
     if ((k - 1) / 2 >= config.warmup_frames) {
       update_ms.push_back(ms);
     }
@@ -392,6 +439,14 @@ int main(int argc, char ** argv)
     dead_reckoning = TwistMotionModel::integrate(dead_reckoning, twist, dt);
     dead_reckoning_at[k] = dead_reckoning;
     frame_of_stamp[Time::fromSeconds(sequence.times[k]).nanoseconds] = k;
+    if (config.kidnap_frame > 0 && k == (config.kidnap_frame | 1)) {
+      // a false relocalization: confident, kidnap_offset off the truth
+      PoseWithCovariance wrong;
+      wrong.pose = truth[k - 2];
+      wrong.pose.position.x() += config.kidnap_offset;
+      wrong.covariance.diagonal() << 0.05, 0.05, 0.01, 0.0005, 0.0005, 0.002;
+      localizer.initialize(wrong, Time::fromSeconds(sequence.times[k - 2]));
+    }
     localizer.addTwist(twist, Time::fromSeconds(sequence.times[k - 2]));
 
     PointCloud scan;
@@ -434,6 +489,70 @@ int main(int argc, char ** argv)
     }
   }
 
+  // ---- consistency, convergence, diagnostics ----
+  std::vector<double> nees, stages, evaluations, acceptance, min_ess, unique_ratios;
+  size_t covered = 0;
+  std::vector<std::pair<size_t, double>> errors_in_order;  // frame, error (all frames)
+  for (const auto & [k, output] : outputs) {
+    errors_in_order.emplace_back(
+      k, (output.estimate.position - truth[k].position).head<2>().norm());
+    if ((k - 1) / 2 < config.warmup_frames) {
+      continue;
+    }
+    // NEES of (x, y, yaw) of the particle estimate with its covariance
+    const Pose & e = output.filter_estimate.pose;
+    Eigen::Vector3d error;
+    error.head<2>() = (e.position - truth[k].position).head<2>();
+    const double dyaw = yawOf(e.orientation) - yawOf(truth[k].orientation);
+    error(2) = std::atan2(std::sin(dyaw), std::cos(dyaw));
+    const Matrix6d & c = output.filter_estimate.covariance;
+    Eigen::Matrix3d p;
+    p << c(0, 0), c(0, 1), c(0, 5), c(1, 0), c(1, 1), c(1, 5), c(5, 0), c(5, 1), c(5, 5);
+    p += 1e-12 * Eigen::Matrix3d::Identity();
+    nees.push_back(error.dot(p.ldlt().solve(error)));
+    covered += nees.back() <= 7.815 ? 1 : 0;  // chi-square 95 %, 3 dof
+    stages.push_back(static_cast<double>(output.statistics.stages));
+    evaluations.push_back(static_cast<double>(output.statistics.likelihood_evaluations));
+    if (output.statistics.proposals > 0) {
+      acceptance.push_back(output.statistics.acceptanceRate());
+    }
+    min_ess.push_back(output.statistics.min_ess_ratio);
+    unique_ratios.push_back(output.unique_ratio);
+  }
+  // converged from the first frame from which the error stays below converged_error (up to the
+  // kidnapping or the end); recovered likewise after the kidnapping
+  auto settle = [&](size_t from_frame, size_t to_frame) -> double {
+    double settled = -1.0;
+    for (const auto & [k, err] : errors_in_order) {
+      if (k < from_frame || k >= to_frame) {
+        continue;
+      }
+      if (err >= config.converged_error) {
+        settled = -1.0;
+      } else if (settled < 0.0) {
+        settled = sequence.times[k] - sequence.times[from_frame];
+      }
+    }
+    return settled;
+  };
+  const size_t kidnap = config.kidnap_frame > 0 ? (config.kidnap_frame | 1) : frame_num;
+  const double convergence_time = settle(1, kidnap);
+  const double recovery_time = config.kidnap_frame > 0 ? settle(kidnap, frame_num) : -1.0;
+  double final_error = 0.0;  // mean of the last 10 frames: far off = converged to a wrong mode
+  {
+    const size_t count = std::min<size_t>(10, errors_in_order.size());
+    for (size_t i = errors_in_order.size() - count; i < errors_in_order.size(); ++i) {
+      final_error += errors_in_order[i].second / static_cast<double>(count);
+    }
+  }
+  auto mean = [](const std::vector<double> & v) {
+    double sum = 0.0;
+    for (const double x : v) {
+      sum += x;
+    }
+    return v.empty() ? 0.0 : sum / static_cast<double>(v.size());
+  };
+
   // ---- report ----
   const Summary t = summarize(filter_errors.translation);
   const Summary y = summarize(filter_errors.yaw);
@@ -475,5 +594,47 @@ int main(int argc, char ** argv)
   std::printf("  dead reckoning   rmse %.3f max %.3f [m]\n", dr.rmse, dr.max);
   std::printf("  update [ms]      mean %.1f p95 %.1f max %.1f\n", time.mean, time.p95, time.max);
   std::printf("  particles        mean %.0f max %.0f\n", particles.mean, particles.max);
+  const Summary rotation = summarize(filter_errors.rotation);
+  std::printf(
+    "  rotation [deg]   rmse %.3f p95 %.3f max %.3f (3D)\n", rotation.rmse * 180 / M_PI,
+    rotation.p95 * 180 / M_PI, rotation.max * 180 / M_PI);
+  std::printf(
+    "  NEES (x, y, yaw) mean %.2f (3 if consistent), 95 %% coverage %.1f %%\n", mean(nees),
+    nees.empty() ? 0.0 : 100.0 * static_cast<double>(covered) / static_cast<double>(nees.size()));
+  std::printf(
+    "  update           stages %.2f, likelihood evaluations %.2f, acceptance %.2f, min ESS / N "
+    "%.2f, distinct particles %.2f, p99 %.1f ms\n",
+    mean(stages), mean(evaluations), mean(acceptance), mean(min_ess), mean(unique_ratios),
+    time.p99);
+  std::printf(
+    "  converged after  %.1f s%s\n", convergence_time,
+    config.kidnap_frame > 0 ? (", recovered after " + std::to_string(recovery_time) + " s").c_str()
+                            : "");
+  if (!config.summary.empty()) {
+    std::ofstream out(config.summary, std::ios::app);
+    out << "{\"sequence\": \"" << argv[2] << "\", \"update\": \""
+        << (config.update.empty() ? (config.annealing > 0 ? "annealing" : "importance")
+                                  : config.update)
+        << "\", \"seed\": " << config.seed << ", \"particles\": " << config.particles
+        << ", \"init_offset\": " << config.init_offset
+        << ", \"init_yaw_offset\": " << config.init_yaw_offset
+        << ", \"annealing\": " << config.annealing << ", \"max_stages\": " << config.max_stages
+        << ", \"mcmc_steps\": " << config.mcmc_steps << ", \"effective\": " << config.effective
+        << ", \"sample\": " << config.sample << ", \"sigma\": " << config.sigma
+        << ", \"scan_matching\": " << config.scan_matching << ", \"device\": \"" << config.device
+        << "\", \"rmse\": " << t.rmse << ", \"mean\": " << t.mean << ", \"p95\": " << t.p95
+        << ", \"max\": " << t.max << ", \"yaw_rmse_deg\": " << y.rmse * 180 / M_PI
+        << ", \"rotation_rmse_deg\": " << rotation.rmse * 180 / M_PI << ", \"lost\": " << lost
+        << ", \"frames\": " << filter_errors.translation.size() << ", \"nees\": " << mean(nees)
+        << ", \"coverage95\": "
+        << (nees.empty() ? 0.0 : static_cast<double>(covered) / static_cast<double>(nees.size()))
+        << ", \"stages\": " << mean(stages) << ", \"evaluations\": " << mean(evaluations)
+        << ", \"acceptance\": " << mean(acceptance) << ", \"min_ess\": " << mean(min_ess)
+        << ", \"distinct\": " << mean(unique_ratios) << ", \"ms_mean\": " << time.mean
+        << ", \"ms_p95\": " << time.p95 << ", \"ms_p99\": " << time.p99
+        << ", \"convergence_s\": " << convergence_time << ", \"recovery_s\": " << recovery_time
+        << ", \"kidnap_frame\": " << config.kidnap_frame << ", \"final_error\": " << final_error
+        << "}\n";
+  }
   return 0;
 }
