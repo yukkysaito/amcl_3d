@@ -65,7 +65,17 @@ struct SensorParams
   {
     bool enabled = false;
     size_t max_stages = 8;
-    size_t mcmc_steps = 1;  // per stage
+    size_t mcmc_steps = 1;    // per stage
+    double cess_ratio = 0.5;  // conditional ESS / N kept by a stage
+    /// MCMC move: random walk Metropolis (no gradients), MALA, MALA preconditioned by the
+    /// cluster covariance, or MALA preconditioned by the Gauss-Newton curvature (LangevinMove).
+    enum class Kernel
+    {
+      kRandomWalk,
+      kMala,
+      kPreconditionedMala,
+      kGaussNewton,
+    } kernel = Kernel::kRandomWalk;
     size_t thread_num = 4;  // proposals and acceptance (CPU threads, 0: all)
   } tempered_smc;
 };

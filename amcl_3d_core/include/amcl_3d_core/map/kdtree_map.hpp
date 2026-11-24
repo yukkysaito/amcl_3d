@@ -14,6 +14,8 @@ public:
   explicit KdTreeMap(const PointCloud::ConstPtr & cloud);
 
   double squaredDistanceToNearest(const Eigen::Vector3d & point) const override;
+  std::optional<Eigen::Vector3d> nearestPoint(const Eigen::Vector3d & point) const override;
+  bool hasNearestPoint() const override { return true; }
   std::string description() const override;
 
 private:

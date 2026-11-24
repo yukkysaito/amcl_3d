@@ -247,6 +247,29 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
     "Most tempering stages per scan; the last one takes the rest of the likelihood");
   smc.mcmc_steps =
     declareCount(node, "scan_tempered_smc.mcmc_steps", smc.mcmc_steps, "MCMC steps per stage");
+  {
+    using Kernel = SensorParams::TemperedSmc::Kernel;
+    const std::string kernel = declare<std::string>(
+      node, "scan_tempered_smc.kernel", "random_walk",
+      "MCMC move: random_walk, mala, preconditioned_mala or gauss_newton");
+    if (kernel == "random_walk") {
+      smc.kernel = Kernel::kRandomWalk;
+    } else if (kernel == "mala") {
+      smc.kernel = Kernel::kMala;
+    } else if (kernel == "preconditioned_mala") {
+      smc.kernel = Kernel::kPreconditionedMala;
+    } else if (kernel == "gauss_newton") {
+      smc.kernel = Kernel::kGaussNewton;
+    } else {
+      throw std::invalid_argument("parameter 'scan_tempered_smc.kernel' is unknown: " + kernel);
+    }
+  }
+  smc.cess_ratio = declare<double>(
+    node, "scan_tempered_smc.cess_ratio", smc.cess_ratio,
+    "Conditional ESS / N kept by a tempering stage: lower takes fewer, larger stages");
+  if (!(smc.cess_ratio > 0.0 && smc.cess_ratio < 1.0)) {
+    throw std::invalid_argument("parameter 'scan_tempered_smc.cess_ratio' must be in (0, 1)");
+  }
   smc.thread_num = thread_num;
   if (smc.enabled && p.point_cloud_sensor.annealing_layer_num > 0) {
     throw std::invalid_argument(

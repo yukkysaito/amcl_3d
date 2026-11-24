@@ -34,6 +34,25 @@ Eigen::VectorXd LikelihoodField::logLikelihood(
                              particles, points, params_.max_distance, params_.thread_num);
 }
 
+bool LikelihoodField::logLikelihoodDerivatives(
+  const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points,
+  LogLikelihoodDerivatives & derivatives) const
+{
+  Eigen::VectorXd sums;
+  if (!map_->sumClippedSquaredDistanceDerivatives(
+        particles, points, params_.max_distance, params_.thread_num, sums, derivatives.gradients,
+        derivatives.hessians)) {
+    return false;
+  }
+  const double inv_two_sigma2 = 1.0 / (2.0 * params_.sigma * params_.sigma);
+  derivatives.values = -inv_two_sigma2 * sums;
+  for (size_t i = 0; i < particles.size(); ++i) {
+    derivatives.gradients[i] *= -inv_two_sigma2;
+    derivatives.hessians[i] *= inv_two_sigma2;
+  }
+  return true;
+}
+
 std::string LikelihoodField::description() const
 {
   std::ostringstream out;

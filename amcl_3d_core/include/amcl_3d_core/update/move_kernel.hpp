@@ -56,9 +56,52 @@ class MoveKernel
 {
 public:
   virtual ~MoveKernel() = default;
+  /// `derivatives`, if not null, holds the derivatives of the current particles (kept up to date
+  /// like `log_likelihood`); kernels that use them compute them otherwise.
   virtual MoveStatistics move(
     ParticleSet & particles, Eigen::VectorXd & log_likelihood, const MoveTarget & target,
-    const ProposalShape & shape, uint64_t key) const = 0;
+    const ProposalShape & shape, uint64_t key,
+    LogLikelihoodDerivatives * derivatives = nullptr) const = 0;
+  /// Whether move() uses log-likelihood derivatives (the caller then maintains them).
+  virtual bool usesDerivatives() const { return false; }
+};
+
+/// Gradient-based moves (Metropolis-adjusted Langevin, Roberts & Tweedie, 1996) in the local
+/// frame of each particle: delta = h/2 M g + sqrt(h) M^(1/2) z, x' = retract(x, delta), g the
+/// gradient of log p(x | ancestor) + exponent log L(x), accepted with the Metropolis-Hastings
+/// ratio including the reverse proposal (derivatives at x'). Preconditioners M:
+/// - kIsotropic: MALA, isotropic in units where 1 rad counts as 5 m, with the mean variance of
+///   the cluster.
+/// - kCluster: preconditioned MALA with the cluster covariance (ProposalShape).
+/// - kGaussNewton: the local curvature (exponent H(x) + prior Hessian)^-1, position dependent
+///   (simplified manifold MALA, Girolami & Calderhead, 2011): a Gauss-Newton step plus noise
+///   shaped by the curvature, so poorly constrained directions (along a corridor) get long
+///   moves and well constrained ones short ones.
+/// h is ProposalShape::scale squared. Needs MeasurementModel::computeDerivatives(); falls back to
+/// no move without them. One derivative evaluation per step (the proposals) when the caller keeps
+/// the derivatives of the current particles.
+class LangevinMove : public MoveKernel
+{
+public:
+  enum class Preconditioner
+  {
+    kIsotropic,
+    kCluster,
+    kGaussNewton,
+  };
+  LangevinMove(Preconditioner preconditioner, size_t thread_num = 4)
+  : preconditioner_(preconditioner), thread_num_(thread_num)
+  {
+  }
+  bool usesDerivatives() const override { return true; }
+  MoveStatistics move(
+    ParticleSet & particles, Eigen::VectorXd & log_likelihood, const MoveTarget & target,
+    const ProposalShape & shape, uint64_t key,
+    LogLikelihoodDerivatives * derivatives = nullptr) const override;
+
+private:
+  Preconditioner preconditioner_;
+  size_t thread_num_;
 };
 
 /// Random walk Metropolis: x' = (t + dt, Exp(dr) R) with (dt, dr) ~ N(0, (scale L)(scale L)^T) of
@@ -70,7 +113,8 @@ public:
   explicit RandomWalkMetropolis(size_t thread_num = 4) : thread_num_(thread_num) {}
   MoveStatistics move(
     ParticleSet & particles, Eigen::VectorXd & log_likelihood, const MoveTarget & target,
-    const ProposalShape & shape, uint64_t key) const override;
+    const ProposalShape & shape, uint64_t key,
+    LogLikelihoodDerivatives * derivatives = nullptr) const override;
 
 private:
   size_t thread_num_;

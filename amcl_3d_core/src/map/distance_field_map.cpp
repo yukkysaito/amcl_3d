@@ -217,15 +217,22 @@ void DistanceFieldMap::build(const PointCloud & cloud)
 double DistanceFieldMap::squaredDistanceToNearest(const Eigen::Vector3d & point) const
 {
   const double max_squared_distance = params_.max_distance * params_.max_distance;
+  const auto site = nearestPoint(point);
+  return site ? std::min((point - *site).squaredNorm(), max_squared_distance)
+              : max_squared_distance;
+}
+
+std::optional<Eigen::Vector3d> DistanceFieldMap::nearestPoint(const Eigen::Vector3d & point) const
+{
   const Eigen::Vector3d scaled = (point / params_.resolution).array().floor();
   if (!scaled.allFinite() || scaled.cwiseAbs().maxCoeff() > 1e9) {
-    return max_squared_distance;
+    return std::nullopt;
   }
   const Eigen::Vector3i voxel = scaled.cast<int>();
   const Eigen::Vector3i block = floorDiv(voxel, block_size_);
   const auto it = block_index_.find(block);
   if (it == block_index_.end()) {
-    return max_squared_distance;
+    return std::nullopt;
   }
   const Eigen::Vector3i local = voxel - block * block_size_;
   const size_t voxel_index =
@@ -233,12 +240,11 @@ double DistanceFieldMap::squaredDistanceToNearest(const Eigen::Vector3d & point)
     (static_cast<size_t>(local.z()) * block_size_ + local.y()) * block_size_ + local.x();
   const int8_t * offset = &site_offsets_[voxel_index * 3];
   if (offset[0] == kNoSite) {
-    return max_squared_distance;
+    return std::nullopt;
   }
-  const Eigen::Vector3d site =
+  return Eigen::Vector3d(
     (voxel.cast<double>().array() + 0.5) * params_.resolution +
-    Eigen::Vector3d(offset[0], offset[1], offset[2]).array() * offset_scale_;
-  return std::min((point - site).squaredNorm(), max_squared_distance);
+    Eigen::Vector3d(offset[0], offset[1], offset[2]).array() * offset_scale_);
 }
 
 std::string DistanceFieldMap::description() const

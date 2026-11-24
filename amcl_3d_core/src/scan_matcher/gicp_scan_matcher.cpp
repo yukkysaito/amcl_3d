@@ -17,13 +17,6 @@ namespace
 {
 using Matrix6d = Eigen::Matrix<double, 6, 6>;
 
-Eigen::Matrix3d skew(const Eigen::Vector3d & v)
-{
-  Eigen::Matrix3d m;
-  m << 0.0, -v.z(), v.y(), v.z(), 0.0, -v.x(), -v.y(), v.x(), 0.0;
-  return m;
-}
-
 pcl::PointXYZ toPoint(const Eigen::Vector3d & p)
 {
   return pcl::PointXYZ(

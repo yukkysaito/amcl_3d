@@ -75,6 +75,30 @@ TEST_F(CudaDistanceFieldMapTest, MatchesCpuField)
   }
 }
 
+TEST_F(CudaDistanceFieldMapTest, DerivativesMatchCpuField)
+{
+  const ParticleSet particles = test::makeRoomParticles(1000);
+  const std::vector<Eigen::Vector3d> points = makePoints();
+  Eigen::VectorXd cpu_sums, gpu_sums;
+  std::vector<Vector6d> cpu_gradients, gpu_gradients;
+  std::vector<Matrix6d> cpu_hessians, gpu_hessians;
+  ASSERT_TRUE(field_->sumClippedSquaredDistanceDerivatives(
+    particles, points, 1.0, 1, cpu_sums, cpu_gradients, cpu_hessians));
+  ASSERT_TRUE(map_->sumClippedSquaredDistanceDerivatives(
+    particles, points, 1.0, 1, gpu_sums, gpu_gradients, gpu_hessians));
+  // as MatchesCpuField: single precision may pick a neighboring voxel's site for a few points
+  size_t agreeing = 0;
+  for (size_t i = 0; i < particles.size(); ++i) {
+    const bool sums = std::abs(gpu_sums(i) - cpu_sums(i)) < 1e-3;
+    const bool gradients =
+      (gpu_gradients[i] - cpu_gradients[i]).norm() < 1e-3 * (1.0 + cpu_gradients[i].norm());
+    const bool hessians =
+      (gpu_hessians[i] - cpu_hessians[i]).norm() < 1e-4 * (1.0 + cpu_hessians[i].norm());
+    agreeing += sums && gradients && hessians ? 1 : 0;
+  }
+  EXPECT_GT(agreeing, particles.size() * 97 / 100);
+}
+
 // Maps in projected coordinates (UTM, MGRS) lie far from the origin, where single precision steps
 // are coarse: 0.06 m at 5e5 m. The GPU must still agree with the CPU field.
 TEST(CudaDistanceFieldMap, MatchesCpuFieldFarFromTheOrigin)

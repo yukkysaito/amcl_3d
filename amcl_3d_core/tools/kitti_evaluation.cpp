@@ -27,7 +27,8 @@
 // particles=<n> sample=<n> scan_matching=0|1 scan_matcher=gicp|ndt max_correction=<m>
 // expansion_reset=0|1 seed=<n> frames=<n>
 // linear_noise_scale= linear_noise_bias= angular_noise_scale= angular_noise_bias= (twist motion model)
-// update=importance|annealing|tsmc max_stages=<n> mcmc_steps=<n> (scan update, tsmc: tempered SMC)
+// update=importance|annealing|tsmc max_stages=<n> mcmc_steps=<n> kernel=rwm|mala|pmala|gn
+// (scan update; tsmc: tempered SMC with that MCMC kernel)
 // kidnap_frame=<frame> kidnap_offset=<m> (re-initialize off the truth to measure recovery)
 // output=<trajectory.csv> summary=<file> (one JSON line of metrics, appended)
 #include <algorithm>
@@ -95,6 +96,8 @@ struct Config
   std::string update;    // importance | annealing (annealing layers, 5 if 0) | tsmc
   size_t max_stages = TemperedSmcUpdate::Params{}.max_stages;
   size_t mcmc_steps = TemperedSmcUpdate::Params{}.mcmc_steps;
+  std::string kernel = "rwm";  // rwm | mala | pmala | gn
+  double cess = 0.5;
   std::string summary;
   size_t kidnap_frame = 0;       // 0: none
   double kidnap_offset = 5.0;    // [m] along x
@@ -186,6 +189,8 @@ Config parseConfig(int argc, char ** argv)
   take("update", c.update);
   take("max_stages", c.max_stages);
   take("mcmc_steps", c.mcmc_steps);
+  take("kernel", c.kernel);
+  take("cess", c.cess);
   take("summary", c.summary);
   take("kidnap_frame", c.kidnap_frame);
   take("kidnap_offset", c.kidnap_offset);
@@ -275,6 +280,17 @@ int main(int argc, char ** argv)
     smc.enabled = true;
     smc.max_stages = config.max_stages;
     smc.mcmc_steps = config.mcmc_steps;
+    smc.cess_ratio = config.cess;
+    using Kernel = SensorParams::TemperedSmc::Kernel;
+    const std::map<std::string, Kernel> kernels{
+      {"rwm", Kernel::kRandomWalk},
+      {"mala", Kernel::kMala},
+      {"pmala", Kernel::kPreconditionedMala},
+      {"gn", Kernel::kGaussNewton}};
+    if (kernels.count(config.kernel) == 0) {
+      throw std::invalid_argument("unknown kernel: " + config.kernel);
+    }
+    smc.kernel = kernels.at(config.kernel);
     smc.thread_num = config.threads;
   } else if (config.update == "annealing" || (config.update.empty() && config.annealing > 0)) {
     params.point_cloud_sensor.annealing_layer_num = config.annealing > 0 ? config.annealing : 5;
@@ -619,7 +635,8 @@ int main(int argc, char ** argv)
         << ", \"init_offset\": " << config.init_offset
         << ", \"init_yaw_offset\": " << config.init_yaw_offset
         << ", \"annealing\": " << config.annealing << ", \"max_stages\": " << config.max_stages
-        << ", \"mcmc_steps\": " << config.mcmc_steps << ", \"effective\": " << config.effective
+        << ", \"mcmc_steps\": " << config.mcmc_steps << ", \"kernel\": \"" << config.kernel
+        << "\", \"cess\": " << config.cess << ", \"effective\": " << config.effective
         << ", \"sample\": " << config.sample << ", \"sigma\": " << config.sigma
         << ", \"scan_matching\": " << config.scan_matching << ", \"device\": \"" << config.device
         << "\", \"rmse\": " << t.rmse << ", \"mean\": " << t.mean << ", \"p95\": " << t.p95

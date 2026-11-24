@@ -22,4 +22,14 @@ LogLikelihood PointCloudMeasurementModel::computeLogLikelihood(const ParticleSet
   return result;
 }
 
+bool PointCloudMeasurementModel::computeDerivatives(
+  const ParticleSet & particles, LogLikelihoodDerivatives & derivatives) const
+{
+  if (!likelihood_->logLikelihoodDerivatives(particles, points_, derivatives)) {
+    return false;
+  }
+  derivatives.observation_num = points_.size();
+  return true;
+}
+
 }  // namespace amcl_3d

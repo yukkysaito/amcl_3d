@@ -39,6 +39,11 @@ public:
 
   Eigen::VectorXd logLikelihood(
     const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points) const override;
+  /// Gradient and Gauss-Newton Hessian of the nearest map points held fixed (see
+  /// PointCloudMap::sumClippedSquaredDistanceDerivatives()); false if the map cannot tell them.
+  bool logLikelihoodDerivatives(
+    const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points,
+    LogLikelihoodDerivatives & derivatives) const override;
   std::string description() const override;
 
   const Params & params() const { return params_; }

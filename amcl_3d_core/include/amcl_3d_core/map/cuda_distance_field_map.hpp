@@ -36,12 +36,22 @@ public:
   {
     return field_->squaredDistanceToNearest(point);
   }
+  std::optional<Eigen::Vector3d> nearestPoint(const Eigen::Vector3d & point) const override
+  {
+    return field_->nearestPoint(point);
+  }
+  bool hasNearestPoint() const override { return true; }
   double maxDistance() const override { return field_->maxDistance(); }
 
   /// Runs on the GPU (`thread_num` is ignored). Throws std::runtime_error on a CUDA error.
   Eigen::VectorXd sumClippedSquaredDistances(
     const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points,
     double clip_distance, size_t thread_num) const override;
+  /// On the GPU too (sufficient statistics per particle, see DeviceDistanceField).
+  bool sumClippedSquaredDistanceDerivatives(
+    const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points,
+    double clip_distance, size_t thread_num, Eigen::VectorXd & sums,
+    std::vector<Vector6d> & gradients, std::vector<Matrix6d> & hessians) const override;
   std::string description() const override;
 
   const DistanceFieldMap & field() const { return *field_; }
