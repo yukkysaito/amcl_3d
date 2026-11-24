@@ -22,6 +22,11 @@ struct NodeParams
   double transform_tolerance;
   /// How long to wait for a transform [s].
   double tf_timeout;
+  /// Inputs stamped more than this ahead of the node clock are dropped [s].
+  double max_stamp_lead;
+  /// A scan older than the newest one by more than this means that time jumped back (e.g. a
+  /// looping rosbag): the filter restarts at its estimate [s].
+  double time_jump_threshold;
   bool publish_tf;
   bool publish_particles;
   /// Used when the initial pose message has no covariance: x, y, z, roll, pitch, yaw.
