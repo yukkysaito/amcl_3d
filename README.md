@@ -258,7 +258,8 @@ one at a time to the defaults (500 particles, default motion noise), 3 seeds:
 | defaults | 0.092-0.105 | 0.080-0.089 | 0.16-0.19 | 0.28-0.41 | 73-78 % | 1.9 / 2.7 |
 | + 5 annealing layers | 0.061-0.062 | 0.053 | 0.11 | 0.16-0.20 | 45-46 % | 5.6 / 6.3 |
 | + `sigma` 0.1 m, 500 scan points | 0.043-0.045 | 0.036-0.038 | 0.08-0.09 | 0.18 | 20-24 % | 11.6 / 13.0 |
-| + GICP refinement (`max_correction` 0.1 m) | **0.034-0.038** | **0.026-0.028** | **0.06-0.07** | 0.18-0.23 | **9-10 %** | 30.7 / 51.3 |
+| + GICP refinement (`max_correction` 0.1 m) | 0.038-0.040 | 0.030-0.031 | 0.07-0.08 | 0.18-0.22 | 11-13 % | 14.1 / 16.1 |
+| the same, `device=cuda` | **0.037-0.039** | **0.029-0.031** | **0.07** | 0.16-0.21 | 11-14 % | **4.3 / 5.8** |
 | the same without annealing | 0.129-0.132 | | 0.25 | 0.40-0.52 | | |
 
 - **Annealing** (`SensorParams::annealing_layer_num`, Deutscher et al., 2000): the default motion
@@ -269,13 +270,19 @@ one at a time to the defaults (500 particles, default motion noise), 3 seeds:
   matters (5 layers, `sigma` 0.1, 500 points): without the moves 0.15 m, with the exponent fixed to
   1 0.093 m, moves as wide as the cloud 0.20 m. Annealing reaches what matching the motion noise to
   the odometry does by hand (0.042-0.046 m), without knowing the odometry error.
+- **Timing**: on the GPU, the 6 likelihood evaluations of an annealed update take 0.03 ms each
+  (1.75 ms each on 4 CPU threads); the rest of the 4.3 ms is GICP (2.4 ms), scan filtering (~1 ms)
+  and the filter itself (0.6 ms).
 - **GICP refinement** (`GicpScanMatcher`): plane-to-plane GICP against the map points with their
   neighborhood covariances, with a Cauchy kernel. Registered from the ground truth offset by
   0.3 m and 1.7 deg, it lands within 2 cm (median); a GICP on 1 m voxel distributions stayed 5-10 cm
   off and PCL's NDT ~0.25 m,
   and NDT refinement instead of GICP gives 0.041-0.042 m. Refinements farther than
   `max_correction` from the particle estimate are rejected: without annealing the estimate is too
-  far off for most of them (last row).
+  far off for most of them (last row). It registers 1000 points of the scan
+  (`GicpScanMatcher::Params::max_point_num`; their covariances still come from the whole scan),
+  linearized about the sensor rather than the map origin, in ~8 iterations: 2.4 ms. All ~7500
+  points of the filtered scan gave 0.035 m in 14 ms.
 - **The reference itself**: registering every localized scan to the map from its ground truth pose
   (PCL GICP) moves it by 0.023 m RMSE (p95 0.039 m), and by 0.1-0.2 m around t = 110 s, where the
   drive closes its loop and the map holds both passes. Of the frames above 5 cm with the full

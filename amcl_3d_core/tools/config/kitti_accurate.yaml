@@ -1,5 +1,6 @@
 # kitti_evaluation options for cm-level accuracy on KITTI 07 (see README, Evaluation):
 #   kitti_evaluation <dataset_dir> 07 config=tools/config/kitti_accurate.yaml [key=value ...]
+# 14 ms per update on 4 CPU threads; add device=cuda (a CUDA build) for 4.3 ms.
 annealing: 5          # annealed particle filter layers per scan
 sigma: 0.1            # [m] likelihood field
 sample: 500           # scan points per update

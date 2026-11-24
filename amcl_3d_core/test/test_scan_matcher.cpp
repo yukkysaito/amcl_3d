@@ -101,6 +101,61 @@ TEST_F(GicpScanMatcherTest, RejectsInvalidArguments)
   expectThrows([](auto & p) { p.min_inlier_ratio = 1.5; });
 }
 
+TEST_F(GicpScanMatcherTest, RegistersASubsetOfTheScan)
+{
+  GicpScanMatcher::Params params;
+  params.max_point_num = 300;  // of ~8000 points
+  GicpScanMatcher matcher(map_, params);
+  Pose guess = true_pose_;
+  guess.position += Eigen::Vector3d(0.2, -0.15, 0.05);
+  guess.orientation = test::yawQuaternion(0.4);
+  const ScanMatchingResult result = matcher.align(scan_, guess);
+  ASSERT_TRUE(result.converged);
+  EXPECT_LT(positionError(result.pose, true_pose_), 0.01);
+  EXPECT_LT(result.pose.orientation.angularDistance(true_pose_.orientation), 0.002);
+}
+
+TEST_F(GicpScanMatcherTest, ConvergesQuicklyFarFromTheMapOrigin)
+{
+  // Linearized about the sensor: a rotation does not swing the scan by its distance to the map
+  // origin, so a few iterations suffice wherever the map is.
+  const Eigen::Vector3d offset(3000.0, -2000.0, 50.0);
+  PointCloud::Ptr far_map(new PointCloud);
+  for (const auto & p : *map_) {
+    far_map->push_back(pcl::PointXYZ(
+      static_cast<float>(p.x + offset.x()), static_cast<float>(p.y + offset.y()),
+      static_cast<float>(p.z + offset.z())));
+  }
+  GicpScanMatcher::Params params;
+  params.max_iterations = 8;
+  GicpScanMatcher matcher(far_map, params);
+  Pose truth = true_pose_;
+  truth.position += offset;
+  Pose guess = truth;
+  guess.position += Eigen::Vector3d(0.1, 0.1, 0.0);
+  guess.orientation = test::yawQuaternion(0.35);
+  const ScanMatchingResult result = matcher.align(scan_, guess);
+  ASSERT_TRUE(result.converged);
+  EXPECT_LT(positionError(result.pose, truth), 0.01);
+}
+
+TEST(PlaneCovariance, OfASubsetEqualsThatOfAllPoints)
+{
+  std::vector<Eigen::Vector3d> points;
+  std::mt19937 rng(3);
+  std::normal_distribution<double> n(0.0, 1.0);
+  for (int i = 0; i < 200; ++i) {
+    points.emplace_back(n(rng), n(rng), 0.1 * n(rng));
+  }
+  const auto all = planeCovariances(points, 10);
+  const std::vector<size_t> queries{0, 17, 99, 199};
+  const auto subset = planeCovariances(points, queries, 10);
+  ASSERT_EQ(subset.size(), queries.size());
+  for (size_t i = 0; i < queries.size(); ++i) {
+    EXPECT_TRUE(subset[i].isApprox(all[queries[i]], 1e-12)) << "query " << queries[i];
+  }
+}
+
 TEST(PlaneCovariance, KeepsTheNormalAndFlattensTheSpread)
 {
   // points spread on the z = 0 plane, much more along x than y
