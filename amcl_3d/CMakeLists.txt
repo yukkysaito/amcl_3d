@@ -21,7 +21,7 @@ find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common filters io registration)
+find_package(PCL REQUIRED COMPONENTS common filters io)
 
 set(DEPENDENCIES
   geometry_msgs

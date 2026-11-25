@@ -8,12 +8,10 @@
 #include "amcl_3d_core/localizer.hpp"
 #include "amcl_3d_core/map/distance_field_map.hpp"
 #include "amcl_3d_core/map/kdtree_map.hpp"
-#include "amcl_3d_core/point_cloud_likelihood/gicp_likelihood.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/point_cloud_likelihood/ndt_likelihood.hpp"
 #include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 #include "amcl_3d_core/scan_matcher/gicp_scan_matcher.hpp"
-#include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "test_utils.hpp"
 
 namespace amcl_3d
@@ -188,20 +186,6 @@ TEST_F(RoomLocalizationTest, ConvergesWithNdtLikelihood)
   EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
 }
 
-TEST_F(RoomLocalizationTest, ConvergesWithGicpLikelihood)
-{
-  params_.scan_filter.voxel_size = 0.3;
-  Localizer localizer(params_);
-  localizer.setPointCloudLikelihood(std::make_shared<GicpLikelihood>(
-    std::make_shared<GaussianVoxelMap>(*map_, GaussianVoxelMap::Params{}),
-    GicpLikelihood::Params{}));
-  localizer.initialize(
-    initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
-  runUpdates(localizer, 30);
-  EXPECT_LT(positionError(localizer), 0.1);
-  EXPECT_LT(yawError(localizer), 1.0 * M_PI / 180.0);
-}
-
 namespace
 {
 /// Records what the localizer hands to the likelihood.
@@ -284,60 +268,22 @@ TEST_F(RoomLocalizationTest, ExpansionResetRecoversFromWrongInitialPose)
   EXPECT_GT(with_reset.lastLikelihood().max, params_.point_cloud_sensor.expansion_reset_threshold);
 }
 
-TEST_F(RoomLocalizationTest, NdtMatcherAlignsFromOffsetGuess)
-{
-  // the convergence basin of NDT is limited (~ resolution / 10 here); the particle filter
-  // provides a guess within it
-  NdtScanMatcher matcher(map_, NdtScanMatcher::Params{1.0, 0.1, 0.001, 50, 1.0});
-  std::vector<Eigen::Vector3d> scan;
-  for (const auto & p : *scan_) {
-    scan.emplace_back(p.x, p.y, p.z);
-  }
-  Pose guess = true_pose_;
-  guess.position += Eigen::Vector3d(0.1, -0.06, 0.0);
-  guess.orientation = test::yawQuaternion(0.32);
-  const ScanMatchingResult result = matcher.align(scan, guess);
-  ASSERT_TRUE(result.converged);
-  EXPECT_LT((result.pose.position - true_pose_.position).norm(), 0.02);
-  EXPECT_LT(result.pose.orientation.angularDistance(true_pose_.orientation), 0.2 * M_PI / 180.0);
-}
-
-TEST_F(RoomLocalizationTest, ScanMatchingRefinesTheEstimate)
-{
-  params_.scan_filter.voxel_size = 0.2;
-  params_.scan_matching.feedback = true;
-  Localizer localizer(params_);
-  localizer.setPointCloudLikelihood(distanceFieldLikelihood());
-  localizer.setScanMatcher(
-    std::make_unique<NdtScanMatcher>(map_, NdtScanMatcher::Params{1.0, 0.1, 0.001, 50, 1.0}));
-  localizer.initialize(
-    initialGuess(0.3, (Vector6d() << 0.1, 0.1, 0.0, 0.0, 0.0, 0.02).finished()), seconds(0.0));
-  runUpdates(localizer, 20);
-  ASSERT_TRUE(localizer.refinedPose().has_value());
-  const Pose & refined = *localizer.refinedPose();
-  EXPECT_LT((refined.position - true_pose_.position).norm(), 0.02);
-  EXPECT_LT(refined.orientation.angularDistance(true_pose_.orientation), 0.2 * M_PI / 180.0);
-  // feedback pulls the particles to the refined pose as well
-  EXPECT_LT(positionError(localizer), 0.05);
-
-  params_.scan_matching.feedback_stddev(0) = 0.0;
-  EXPECT_THROW(Localizer{params_}, std::invalid_argument);
-}
-
-TEST_F(RoomLocalizationTest, AnnealingConcentratesTheParticlesWhereTheScanFits)
+TEST_F(RoomLocalizationTest, TemperedSmcConcentratesTheParticlesWhereTheScanFits)
 {
   // Odometry with an error (0.5 m/s while the scan stays put) and a noisy motion model: each
   // prediction pushes the cloud 5 cm off and scatters it, and the tempered likelihood alone pulls
-  // the estimate back only partly. Annealing moves the cloud to where the scan fits.
+  // the estimate back only partly. Tempered SMC moves the cloud to where the scan fits.
   params_.scan_filter.voxel_size = 0.3;
   params_.point_cloud_sensor.max_effective_observation_num = 10;
   params_.motion_model.twist = TwistMotionModel::Params{0.0, 0.3, 0.0, 0.05};
-  auto meanError = [this](size_t annealing_layer_num) {
+  auto meanError = [this](bool tempered_smc) {
     double sum = 0.0;
     int count = 0;
     for (const uint64_t seed : {1, 2, 3, 4, 5}) {
       params_.random_seed = seed;
-      params_.point_cloud_sensor.annealing_layer_num = annealing_layer_num;
+      params_.point_cloud_sensor.tempered_smc.enabled = tempered_smc;
+      params_.point_cloud_sensor.tempered_smc.cess_ratio = 0.15;
+      params_.point_cloud_sensor.max_effective_observation_num = tempered_smc ? 100 : 10;
       Localizer localizer(params_);
       localizer.setPointCloudLikelihood(distanceFieldLikelihood());
       localizer.initialize(
@@ -356,9 +302,9 @@ TEST_F(RoomLocalizationTest, AnnealingConcentratesTheParticlesWhereTheScanFits)
     }
     return sum / count;
   };
-  const double plain = meanError(0);
-  const double annealed = meanError(3);
-  EXPECT_LT(annealed, 0.5 * plain) << "plain " << plain << " m, annealed " << annealed << " m";
+  const double plain = meanError(false);
+  const double tempered = meanError(true);
+  EXPECT_LT(tempered, 0.5 * plain) << "plain " << plain << " m, tempered SMC " << tempered << " m";
 }
 
 TEST_F(RoomLocalizationTest, GicpScanMatchingRefinesTheEstimate)

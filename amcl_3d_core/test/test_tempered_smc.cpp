@@ -14,7 +14,6 @@
 #include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/resampler/systematic_resampler.hpp"
 #include "amcl_3d_core/transition_prior.hpp"
-#include "amcl_3d_core/update/annealed_update.hpp"
 #include "amcl_3d_core/update/tempered_smc_update.hpp"
 #include "test_utils.hpp"
 
@@ -105,50 +104,26 @@ TEST_F(GaussianPosteriorTest, TemperedSmcTargetsThePosterior)
   }
 }
 
-TEST_F(GaussianPosteriorTest, GradientKernelsTargetThePosterior)
+TEST_F(GaussianPosteriorTest, GaussNewtonMovesTargetThePosterior)
 {
-  // the same posterior with Langevin moves: the Metropolis-Hastings correction with the reverse
-  // proposal keeps it exact whatever the preconditioner
-  for (const auto preconditioner :
-       {LangevinMove::Preconditioner::kIsotropic, LangevinMove::Preconditioner::kCluster,
-        LangevinMove::Preconditioner::kGaussNewton}) {
-    TemperedSmcUpdate::Params params;
-    params.max_stages = 30;
-    // isotropic moves mix slowly across axes of different scales (position vs yaw): more steps
-    params.mcmc_steps = preconditioner == LangevinMove::Preconditioner::kIsotropic ? 10 : 3;
-    params.cess_ratio = 0.3;
-    const TemperedSmcUpdate update(params, std::make_shared<LangevinMove>(preconditioner, 1));
-    for (const uint64_t seed : {1, 2}) {
-      ParticleFilter filter(seed);
-      filter.initialize(prior_, 4000);
-      const UpdateResult result =
-        update.apply(filter, PoseMeasurementModel(observation_), contextFor(filter));
-      const auto [mean, covariance] = posterior(filter);
-      const int kind = static_cast<int>(preconditioner);
-      EXPECT_GT(result.statistics.acceptanceRate(), 0.2) << "kind " << kind << ", seed " << seed;
-      for (int k : {0, 1, 5}) {
-        const double stddev = std::sqrt(posterior_covariance_(k, k));
-        EXPECT_NEAR(mean(k), posterior_mean_(k), 0.1 * stddev)
-          << "kind " << kind << ", seed " << seed << ", axis " << k;
-        EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.15)
-          << "kind " << kind << ", seed " << seed << ", axis " << k;
-      }
-    }
-  }
-}
-
-TEST_F(GaussianPosteriorTest, AnnealingIsOverconfident)
-{
-  // the baseline applies the likelihood once per layer on top of the update (its moves widen
-  // the cloud again, but not enough): 20-25 % too little variance on every axis
-  const AnnealedUpdate update(5);
-  for (const uint64_t seed : {1, 2, 3}) {
+  // the same posterior with Gauss-Newton Langevin moves: the Metropolis-Hastings correction with
+  // the reverse proposal keeps it exact
+  TemperedSmcUpdate::Params params;
+  params.max_stages = 30;
+  params.mcmc_steps = 3;
+  params.cess_ratio = 0.3;
+  const TemperedSmcUpdate update(params, std::make_shared<GaussNewtonMove>(1));
+  for (const uint64_t seed : {1, 2}) {
     ParticleFilter filter(seed);
     filter.initialize(prior_, 4000);
-    update.apply(filter, PoseMeasurementModel(observation_), contextFor(filter));
+    const UpdateResult result =
+      update.apply(filter, PoseMeasurementModel(observation_), contextFor(filter));
     const auto [mean, covariance] = posterior(filter);
+    EXPECT_GT(result.statistics.acceptanceRate(), 0.2) << "seed " << seed;
     for (int k : {0, 1, 5}) {
-      EXPECT_LT(covariance(k, k), 0.85 * posterior_covariance_(k, k))
+      const double stddev = std::sqrt(posterior_covariance_(k, k));
+      EXPECT_NEAR(mean(k), posterior_mean_(k), 0.1 * stddev) << "seed " << seed << ", axis " << k;
+      EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.15)
         << "seed " << seed << ", axis " << k;
     }
   }

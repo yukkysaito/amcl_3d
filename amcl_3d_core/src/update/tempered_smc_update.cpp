@@ -134,7 +134,6 @@ UpdateResult TemperedSmcUpdate::apply(
       statistics.proposals += moved.proposals;
       statistics.accepted += moved.accepted;
       statistics.likelihood_evaluations += moved.likelihood_evaluations;
-      result.moved = result.moved || moved.accepted > 0;
       // Robbins-Monro on the log scale, towards the target acceptance rate
       if (moved.proposals > 0) {
         const double rate =

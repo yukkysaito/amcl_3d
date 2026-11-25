@@ -281,13 +281,13 @@ TEST_F(Amcl3dNodeTest, RestartsWhenTimeJumpsBack)
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
-class Amcl3dNodeDelayTest : public Amcl3dNodeTest, public ::testing::WithParamInterface<std::string>
+class Amcl3dNodeDelayTest : public Amcl3dNodeTest, public ::testing::WithParamInterface<bool>
 {
 };
 
 TEST_P(Amcl3dNodeDelayTest, FusesDelayedScansAndPublishesTheNewestEstimate)
 {
-  start({{"scan_delayed_fusion", GetParam()}});
+  start({{"scan_tempered_smc.enabled", GetParam()}});
   publishInitialPose();
   const rclcpp::Time start = io_->now();
   rclcpp::Time newest = start;
@@ -305,8 +305,8 @@ TEST_P(Amcl3dNodeDelayTest, FusesDelayedScansAndPublishesTheNewestEstimate)
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-  DelayedFusion, Amcl3dNodeDelayTest, ::testing::Values("replay", "reweight"));
+// replayed with one importance update per scan and with tempered SMC
+INSTANTIATE_TEST_SUITE_P(Updates, Amcl3dNodeDelayTest, ::testing::Bool());
 
 TEST_F(Amcl3dNodeTest, GlobalLocalizationService)
 {
@@ -346,18 +346,6 @@ TEST_F(Amcl3dNodeTest, ScanMatchingRefinesPublishedPose)
   EXPECT_LT(orientationError(), 0.5 * M_PI / 180.0);
 }
 
-TEST_F(Amcl3dNodeTest, NdtScanMatchingRefinesPublishedPose)
-{
-  start(
-    {{"scan_matching.enabled", true},
-     {"scan_matching.type", "ndt"},
-     {"scan_max_effective_points", 0}});
-  publishInitialPose();
-  publishScans(20);
-  EXPECT_LT(positionError(), 0.02);
-  EXPECT_LT(orientationError(), 0.5 * M_PI / 180.0);
-}
-
 TEST_F(Amcl3dNodeTest, LocalizesWithTemperedSmc)
 {
   start({{"scan_tempered_smc.enabled", true}, {"scan_max_effective_points", 100}});
@@ -380,23 +368,11 @@ TEST_F(Amcl3dNodeTest, LocalizesWithGaussNewtonMoves)
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
-TEST_F(Amcl3dNodeTest, RejectsAnnealingWithTemperedSmc)
+TEST_F(Amcl3dNodeTest, RejectsUnknownMoveKernel)
 {
-  rclcpp::NodeOptions options;
-  options.parameter_overrides({{"scan_tempered_smc.enabled", true}, {"scan_annealing_layers", 3}});
-  EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);
   rclcpp::NodeOptions unknown_kernel;
   unknown_kernel.parameter_overrides({{"scan_tempered_smc.kernel", "hmc"}});
   EXPECT_THROW(Amcl3dNode{unknown_kernel}, std::invalid_argument);
-}
-
-TEST_F(Amcl3dNodeTest, LocalizesWithAnnealing)
-{
-  start({{"scan_annealing_layers", 3}});
-  publishInitialPose();
-  publishScans(20);
-  EXPECT_LT(positionError(), 0.1);
-  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
 TEST_F(Amcl3dNodeTest, LocalizesWithNdtLikelihood)
@@ -408,27 +384,13 @@ TEST_F(Amcl3dNodeTest, LocalizesWithNdtLikelihood)
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
-TEST_F(Amcl3dNodeTest, LocalizesWithGicpLikelihood)
-{
-  start({{"point_cloud_likelihood.type", "gicp"}});
-  publishInitialPose();
-  publishScans(60);  // the coarse voxel distributions settle more slowly on a repeated scan
-  EXPECT_LT(positionError(), 0.1);
-  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
-}
-
 TEST_F(Amcl3dNodeTest, RejectsUnknownLikelihoodAtStartup)
 {
-  rclcpp::NodeOptions options;
-  options.parameter_overrides({{"point_cloud_likelihood.type", "icp"}});
-  EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);
-}
-
-TEST_F(Amcl3dNodeTest, RejectsUnknownScanMatcherAtStartup)
-{
-  rclcpp::NodeOptions options;
-  options.parameter_overrides({{"scan_matching.type", "icp"}});
-  EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument);
+  for (const std::string type : {"icp", "gicp"}) {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({{"point_cloud_likelihood.type", type}});
+    EXPECT_THROW(Amcl3dNode{options}, std::invalid_argument) << type;
+  }
 }
 
 TEST_F(Amcl3dNodeTest, LocalizesWithCuda)

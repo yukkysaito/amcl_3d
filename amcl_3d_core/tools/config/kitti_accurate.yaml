@@ -1,8 +1,9 @@
-# kitti_evaluation options for cm-level accuracy on KITTI 07 (see README, Evaluation):
+# kitti_evaluation options for cm-level accuracy on KITTI 07 (see docs/evaluation.md):
 #   kitti_evaluation <dataset_dir> 07 config=tools/config/kitti_accurate.yaml [key=value ...]
-# 14 ms per update on 4 CPU threads; add device=cuda (a CUDA build) for 4.3 ms.
-annealing: 5          # annealed particle filter layers per scan
-sigma: 0.1            # [m] likelihood field
-sample: 500           # scan points per update
+# the node defaults (tempered SMC) plus GICP refinement; add device=cuda (a CUDA build) for the
+# likelihood on the GPU.
+update: tsmc          # tempered SMC with random walk moves (the node default)
+effective: 100
+cess: 0.15
 scan_matching: 1      # refine the estimate by GICP
 max_correction: 0.1   # [m] keep the particle estimate when GICP moves it farther

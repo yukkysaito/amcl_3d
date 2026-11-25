@@ -29,34 +29,26 @@
     # A scan counts as at most this many independent points: its points are strongly correlated,
     # and treating them as independent makes the filter overconfident. With tempered SMC the
     # likelihood enters in stages and can be sharper: 100 gives a consistent covariance (NEES ~3);
-    # a single update (both scan_tempered_smc.enabled: false and scan_annealing_layers: 0) needs
-    # 5-10. 0 disables the limit.
+    # a single update (scan_tempered_smc.enabled: false) needs 5-10. 0 disables the limit.
     scan_max_effective_points: 100
     # Adaptive tempered SMC with MCMC moves: the scan enters in as many stages as its sharpness
     # needs (conditional ESS kept at cess_ratio N), the moves keep the motion prior, so the
-    # particle covariance matches the error. KITTI, 6 sequences x 3 seeds, against 5 annealing
-    # layers: 0.081 -> 0.075 m, kidnapped 0.146 -> 0.104 m, at 5.3 instead of 6 likelihood
-    # evaluations per scan (README).
+    # particle covariance matches the error. KITTI, 6 sequences x 3 seeds, against the annealed
+    # particle filter it replaced: 0.081 -> 0.075 m, kidnapped 0.146 -> 0.104 m, at 5.3 instead
+    # of 6 likelihood evaluations per scan (docs/evaluation.md). false: one importance update.
     scan_tempered_smc:
       enabled: true
       max_stages: 8  # the last one takes the rest of the likelihood
       mcmc_steps: 1  # per stage
-      # random_walk | mala | preconditioned_mala | gauss_newton; the gradient kernels need a
-      # likelihood_field (distance field or k-d tree). gauss_newton: 0.071 m nominal but slower
-      # recovery from a wrong pose (README).
+      # random_walk | gauss_newton (Langevin moves along the scan's Gauss-Newton curvature, needs
+      # the likelihood_field): 0.071 m nominal but slower recovery from a wrong pose
+      # (docs/evaluation.md).
       kernel: random_walk
       cess_ratio: 0.15  # conditional ESS / N kept by a stage; lower: fewer, larger stages
-    # Annealed particle filter (the former default, exclusive with scan_tempered_smc): layers that
-    # weight the particles by a softened likelihood, resample and move them. Not a consistent
-    # update (README); 5 layers with scan_max_effective_points: 10 and tempered SMC off.
-    scan_annealing_layers: 0
     # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
-    # at their own time by replaying the newer scans [s]; costs one particle set per scan of memory.
+    # at their own time by replaying the newer scans (the result of time order) [s]; costs one
+    # particle set per scan of memory and one update per newer scan.
     max_measurement_delay: 1.0
-    # Fusion of a late scan: 'replay' the newer scans (exact: the result of time order) or
-    # 'reweight' the descendants of the particles at its time (retroactive particle filter, one
-    # update whatever the delay, approximate).
-    scan_delayed_fusion: replay
     random_seed: -1       # -1: random
     # CPU threads of the filter; 0 uses every hardware thread, which was slower than 4-16 threads on
     # a 32 thread CPU (idle OpenMP threads spin on the cores the rest of the update runs on)
@@ -91,13 +83,11 @@
       max_z: 100.0      # [m]
       voxel_size: 0.5   # [m] uniform density; 0 disables
 
-    # how well a scan fits the map at each particle (see README, Evaluation)
+    # how well a scan fits the map at each particle (see docs/evaluation.md)
     point_cloud_likelihood:
       # likelihood_field: distance from each point to the nearest map point; most accurate
       # ndt: Mahalanobis distance to the normal distribution of the map points in each voxel;
       #   ~10x less memory than the distance field, ~10 % more error on KITTI 07
-      # gicp: ndt plus the local covariance of the scan (voxelized GICP); no gain over ndt on
-      #   KITTI 07, provided for other sensors and maps
       type: likelihood_field
       likelihood_field:
         max_distance: 1.0  # [m] point-to-map distance is clipped here (robust to dynamic objects)
@@ -117,13 +107,6 @@
         sigma: 0.2                     # [m] measurement noise added to every distribution
         max_mahalanobis_distance: 5.0  # per-point clipping [std dev]
         search_neighbors: true         # also match with the 6 face neighbors (wider basin)
-      gicp:
-        resolution: 1.0                # [m] voxel size of the map distributions
-        min_point_num: 6
-        search_neighbors: true
-        sigma: 0.2                     # [m] measurement noise added to every pair
-        max_mahalanobis_distance: 5.0  # per-point clipping [std dev]
-        neighbor_num: 10               # scan points per scan covariance
 
     resampling:
       type: systematic          # systematic | kld
@@ -157,22 +140,14 @@
       cell_size: 1.0    # [m] grid to find the ground height
       base_height: 0.0  # [m] base frame above the ground
 
-    # refine the published pose by scan matching
+    # refine the published pose by GICP scan matching (cm-level on KITTI); the particles are not
+    # corrected by it
     scan_matching:
       enabled: false
-      type: gicp  # gicp (cm-level on KITTI) | ndt (PCL)
       max_correction: 1.0  # [m] reject matches farther than this from the particle estimate
-      feedback: false      # also correct the particles (uses the scan twice: overconfident)
-      feedback_stddev: [0.1, 0.1, 0.1, 0.01, 0.01, 0.02]
       gicp:
         max_correspondence_distance: 1.0  # [m]
         robust_kernel_width: 3.0          # Cauchy kernel on the Mahalanobis distance of a pair
-      ndt:
-        resolution: 1.0
-        step_size: 0.1
-        transformation_epsilon: 0.01
-        max_iterations: 30
-        max_fitness: 1.0  # [m^2]
 
     augmented_mcl:
       enabled: false
