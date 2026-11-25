@@ -180,7 +180,9 @@ TEST(VehicleMotionModel, NoiselessMotionIsThePlanarArc)
 
 TEST(VehicleMotionModel, NoiseIsAnisotropic)
 {
-  const VehicleMotionModel::Params params;
+  // small slip against the speed noise (the defaults are wider, as measured on KITTI)
+  VehicleMotionModel::Params params;
+  params.lateral_noise_scale = params.vertical_noise_scale = 0.02;
   RandomGenerator rng(13);
   ParticleSet particles(20000);
   const double speed = 10.0;
@@ -192,6 +194,28 @@ TEST(VehicleMotionModel, NoiseIsAnisotropic)
   EXPECT_LT(s.y(), 0.5 * s.x());
   EXPECT_LT(s.z(), 0.5 * s.x());
   EXPECT_GT(s.z(), params.vertical_noise_scale * speed * sqrt_dt * 0.9);
+}
+
+TEST(VehicleMotionModel, AttitudeRandomWalksWithTheDistance)
+{
+  // roll and pitch diffuse with sqrt(distance): 4x the speed doubles their spread per step
+  VehicleMotionModel::Params params;
+  auto pitch_spread = [&params](double speed) {
+    RandomGenerator rng(14);
+    ParticleSet particles(20000);
+    VehicleMotionModel(params).predict(makeTwist({speed, 0, 0}, {0, 0, 0}), 0.1, particles, rng);
+    double sum = 0.0;
+    for (size_t i = 0; i < particles.size(); ++i) {
+      const Eigen::Vector3d forward = particles.pose(i).orientation * Eigen::Vector3d::UnitX();
+      sum += std::asin(-forward.z()) * std::asin(-forward.z());
+    }
+    return std::sqrt(sum / static_cast<double>(particles.size()));
+  };
+  const double slow = pitch_spread(5.0);
+  const double fast = pitch_spread(20.0);
+  // std of the pitch after one step: attitude_noise_scale * sqrt(distance)
+  EXPECT_NEAR(slow, params.attitude_noise_scale * std::sqrt(5.0 * 0.1), 0.1 * slow);
+  EXPECT_NEAR(fast / slow, 2.0, 0.1);
 }
 
 TEST(VehicleMotionModel, ResultDoesNotDependOnThreadNum)

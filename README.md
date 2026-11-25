@@ -1,6 +1,8 @@
 # amcl_3d
 
-3D Monte Carlo localization (particle filter) of a vehicle in a point cloud map with a LiDAR, for ROS 2.
+3D Monte Carlo localization (particle filter) in a point cloud map with a LiDAR, for ROS 2. The
+scan likelihood and the filter make no assumption about the platform (vehicles, indoor robots,
+handheld sensors); only the motion model, a plug-in, encodes one.
 
 ## Packages
 
@@ -80,10 +82,11 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Prediction**: odometry twists (optionally with IMU angular velocity) are buffered and integrated
   on SE(3) up to each measurement stamp; white velocity noise independent of the odometry rate,
   with
-  - `twist`: generic 6-DoF motion with isotropic noise, or
-  - `vehicle`: car-like motion (forward speed and yaw rate, base frame at the rear axle) with
-    anisotropic noise growing with the speed; 25 % lower yaw error than `twist` on KITTI with
-    wheel-like odometry ([evaluation](docs/evaluation.md#motion-models))
+  - `vehicle` (default): car-like motion (forward speed and yaw rate, base frame at the rear
+    axle) with noise growing with the speed and roll / pitch random walking with the distance;
+    needs only the odometry a car provides and is as accurate as `twist` on KITTI
+    ([evaluation](docs/evaluation.md#the-vehicle-model-as-the-node-default)), or
+  - `twist`: generic 6-DoF motion with isotropic noise (robots, handheld sensors)
 - **Correction** by a scan likelihood (`point_cloud_likelihood.type`), robust to points not in
   the map by clipping:
   - `likelihood_field` (default): distance from each point to the nearest map point, on
@@ -196,7 +199,9 @@ Source layout of `amcl_3d_core` (headers under `include/amcl_3d_core/`, sources 
 ## Evaluation
 
 KITTI odometry sequences 07, 03, 04, 06, 10 and 01 (highway), 3 seeds each, the node defaults
-(tempered SMC with random walk moves, 500 particles, 800 scan points, the likelihood on the GPU):
+(tempered SMC with random walk moves, 500 particles, 800 scan points, the likelihood on the GPU),
+with the twist motion model (the vehicle model, the node default, is within 0.002 m, see
+[docs/evaluation.md](docs/evaluation.md#the-vehicle-model-as-the-node-default)):
 the map from even frames registered with the ground truth, odd frames localized with odometry
 derived from the ground truth with a 2 % scale error, a yaw rate bias and noise. Means over the
 18 runs:

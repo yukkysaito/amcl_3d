@@ -26,7 +26,7 @@ std::optional<LinearizedMotion> VehicleMotionModel::linearize(const Twist & twis
     (params_.yaw_rate_noise_scale * std::abs(yaw_rate) + params_.yaw_rate_noise_bias) * inv_sqrt_dt;
   const double lateral_stddev = params_.lateral_noise_scale * abs_speed * inv_sqrt_dt;
   const double vertical_stddev = params_.vertical_noise_scale * abs_speed * inv_sqrt_dt;
-  const double attitude_stddev = params_.attitude_noise_scale * abs_speed * inv_sqrt_dt;
+  const double attitude_stddev = params_.attitude_noise_scale * std::sqrt(abs_speed) * inv_sqrt_dt;
   return linearizeStep([&](const Vector6d & noise) {
     Twist noisy;
     noisy.linear.x() = speed + speed_stddev * noise(0);
@@ -67,7 +67,7 @@ void VehicleMotionModel::predict(
     (params_.yaw_rate_noise_scale * std::abs(yaw_rate) + params_.yaw_rate_noise_bias) * inv_sqrt_dt;
   const double lateral_stddev = params_.lateral_noise_scale * abs_speed * inv_sqrt_dt;
   const double vertical_stddev = params_.vertical_noise_scale * abs_speed * inv_sqrt_dt;
-  const double attitude_stddev = params_.attitude_noise_scale * abs_speed * inv_sqrt_dt;
+  const double attitude_stddev = params_.attitude_noise_scale * std::sqrt(abs_speed) * inv_sqrt_dt;
 
   moveParticlesInParallel(
     particles, rng, params_.thread_num, [&](const Pose & pose, RandomGenerator & stream) {

@@ -230,7 +230,7 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
 
   auto & motion = p.motion_model;
   motion.type = toMotionModelType(declare<std::string>(
-    node, "motion_model.type", "twist", "'twist' (generic 6-DoF) or 'vehicle' (car-like)"));
+    node, "motion_model.type", "vehicle", "'twist' (generic 6-DoF) or 'vehicle' (car-like)"));
   auto & twist = motion.twist;
   const auto & twist_defaults = defaults.motion_model.twist;
   twist.thread_num = thread_num;
@@ -269,7 +269,7 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
     "Vertical slip velocity noise per |v| (suspension, base frame misalignment) [1/sqrt(s)]");
   vehicle.attitude_noise_scale = declare<double>(
     node, "motion_model.vehicle.attitude_noise_scale", vehicle_defaults.attitude_noise_scale,
-    "Roll / pitch rate noise per |v| (road grade and bank changes) [rad/m*sqrt(s)]");
+    "Roll / pitch random walk per sqrt(distance) (road grade and bank changes) [rad/sqrt(m)]");
   vehicle.min_noise_speed = declare<double>(
     node, "motion_model.vehicle.min_noise_speed", vehicle_defaults.min_noise_speed,
     "The noise is computed for at least this speed, so that the estimate refines while stopped "

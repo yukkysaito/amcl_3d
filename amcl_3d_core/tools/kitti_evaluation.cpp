@@ -27,6 +27,7 @@
 // particles=<n> sample=<n> scan_matching=0|1 max_correction=<m>
 // expansion_reset=0|1 seed=<n> frames=<n>
 // linear_noise_scale= linear_noise_bias= angular_noise_scale= angular_noise_bias= (twist motion model)
+// vehicle.<VehicleMotionModel::Params field>=<value> (vehicle motion model noise)
 // update=importance|tsmc max_stages=<n> mcmc_steps=<n> kernel=rwm|gn coarse=0|1
 // (scan update; tsmc: tempered SMC with that MCMC kernel)
 // kidnap_frame=<frame> kidnap_offset=<m> (re-initialize off the truth to measure recovery)
@@ -103,6 +104,7 @@ struct Config
   double converged_error = 0.5;                                            // [m]
   double max_correction = LocalizerParams{}.scan_matching.max_correction;  // [m]
   TwistMotionModel::Params twist_noise;
+  VehicleMotionModel::Params vehicle_noise;
   bool expansion_reset = false;
   uint64_t seed = 1;
   size_t frames = 0;       // 0: all
@@ -197,6 +199,14 @@ Config parseConfig(int argc, char ** argv)
   take("linear_noise_bias", c.twist_noise.linear_noise_bias);
   take("angular_noise_scale", c.twist_noise.angular_noise_scale);
   take("angular_noise_bias", c.twist_noise.angular_noise_bias);
+  take("vehicle.speed_noise_scale", c.vehicle_noise.speed_noise_scale);
+  take("vehicle.speed_noise_bias", c.vehicle_noise.speed_noise_bias);
+  take("vehicle.yaw_rate_noise_scale", c.vehicle_noise.yaw_rate_noise_scale);
+  take("vehicle.yaw_rate_noise_bias", c.vehicle_noise.yaw_rate_noise_bias);
+  take("vehicle.lateral_noise_scale", c.vehicle_noise.lateral_noise_scale);
+  take("vehicle.vertical_noise_scale", c.vehicle_noise.vertical_noise_scale);
+  take("vehicle.attitude_noise_scale", c.vehicle_noise.attitude_noise_scale);
+  take("vehicle.min_noise_speed", c.vehicle_noise.min_noise_speed);
   take("expansion_reset", c.expansion_reset);
   take("seed", c.seed);
   take("frames", c.frames);
@@ -298,6 +308,7 @@ int main(int argc, char ** argv)
   params.motion_model.twist = config.twist_noise;
   params.motion_model.twist.thread_num = config.threads;
   params.scan_matching.max_correction = config.max_correction;
+  params.motion_model.vehicle = config.vehicle_noise;
   params.motion_model.vehicle.thread_num = config.threads;
   Localizer localizer(params);
   PointCloudLikelihoodParams likelihood_params;

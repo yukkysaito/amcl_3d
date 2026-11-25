@@ -14,8 +14,11 @@ namespace amcl_3d
 ///   and the yaw rate w (twist.angular.z) are used; the other components are ignored. The base
 ///   frame is expected at the rear axle center, where the lateral velocity of a car is zero.
 /// - The noise is anisotropic: forward speed and yaw rate errors (scale and bias, e.g. tire radius
-///   and gyro bias), small lateral and vertical slip and attitude changes (road grade and bank)
-///   that grow with the speed instead of a fixed isotropic noise. The vertical slip absorbs a
+///   and gyro bias), lateral and vertical slip that grow with the speed, and attitude changes
+///   (road grade and bank) that random walk with the distance traveled: their std grows with
+///   sqrt(distance), so their rate noise with sqrt(|v|). A rate noise proportional to |v| made
+///   roll and pitch diffuse by ~14 deg per second at highway speed and the filter overconfident
+///   (NEES in the hundreds on KITTI 01). The vertical slip absorbs a
 ///   misaligned base frame and the suspension: without it, a base frame pitched by 0.8 deg against
 ///   the direction of travel made the estimate sink by 0.1 m/s and diverge on KITTI.
 /// - The noise is computed as if the vehicle moved at least `min_noise_speed`. A stopped car does
@@ -31,13 +34,14 @@ class VehicleMotionModel : public MotionModel
 public:
   struct Params
   {
-    double speed_noise_scale = 0.05;     // [1/sqrt(s)] of |v|
-    double speed_noise_bias = 0.05;      // [m/s * sqrt(s)]
-    double yaw_rate_noise_scale = 0.05;  // [1/sqrt(s)] of |w|
-    double yaw_rate_noise_bias = 0.01;   // [rad/s * sqrt(s)]
-    double lateral_noise_scale = 0.02;   // [1/sqrt(s)] lateral velocity per |v|
-    double vertical_noise_scale = 0.02;  // [1/sqrt(s)] vertical velocity per |v|
-    double attitude_noise_scale = 0.01;  // [rad/m * sqrt(s)] roll / pitch rate per |v|
+    double speed_noise_scale = 0.1;     // [1/sqrt(s)] of |v|
+    double speed_noise_bias = 0.1;      // [m/s * sqrt(s)]
+    double yaw_rate_noise_scale = 0.1;  // [1/sqrt(s)] of |w|
+    double yaw_rate_noise_bias = 0.02;  // [rad/s * sqrt(s)]
+    double lateral_noise_scale = 0.1;   // [1/sqrt(s)] lateral velocity per |v|
+    double vertical_noise_scale = 0.1;  // [1/sqrt(s)] vertical velocity per |v|
+    /// [rad/sqrt(m)] roll / pitch random walk per sqrt(distance traveled)
+    double attitude_noise_scale = 0.01;
     double min_noise_speed = 1.0;        // [m/s] noise floor: speed assumed for the noise
     size_t thread_num = 4;               // CPU threads (0: all hardware threads)
   };

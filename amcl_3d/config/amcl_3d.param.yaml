@@ -63,21 +63,22 @@
       # twist: generic 6-DoF body twist with isotropic white velocity noise
       #   (std = scale * |velocity| + bias per sqrt(s), on each axis); robots, handheld sensors
       # vehicle: car-like; uses only the forward speed and the yaw rate (base frame at the rear
-      #   axle center) with anisotropic noise that grows with the speed
-      type: twist
+      #   axle center) with noise that grows with the speed; as accurate as twist on KITTI
+      #   (docs/evaluation.md), tighter in yaw
+      type: vehicle
       twist:
         linear_noise_scale: 0.1   # [1/sqrt(s)]
         linear_noise_bias: 0.1    # [m/s*sqrt(s)]
         angular_noise_scale: 0.1  # [1/sqrt(s)]
         angular_noise_bias: 0.02  # [rad/s*sqrt(s)]
       vehicle:
-        speed_noise_scale: 0.05     # [1/sqrt(s)]
-        speed_noise_bias: 0.05      # [m/s*sqrt(s)]
-        yaw_rate_noise_scale: 0.05  # [1/sqrt(s)]
-        yaw_rate_noise_bias: 0.01   # [rad/s*sqrt(s)]
-        lateral_noise_scale: 0.02   # [1/sqrt(s)] lateral slip per |v|
-        vertical_noise_scale: 0.02  # [1/sqrt(s)] vertical slip per |v| (suspension, calibration)
-        attitude_noise_scale: 0.01  # [rad/m*sqrt(s)] roll / pitch rate per |v|
+        speed_noise_scale: 0.1     # [1/sqrt(s)]
+        speed_noise_bias: 0.1      # [m/s*sqrt(s)]
+        yaw_rate_noise_scale: 0.1  # [1/sqrt(s)]
+        yaw_rate_noise_bias: 0.02  # [rad/s*sqrt(s)]
+        lateral_noise_scale: 0.1   # [1/sqrt(s)] lateral slip per |v|
+        vertical_noise_scale: 0.1  # [1/sqrt(s)] vertical slip per |v| (suspension, calibration)
+        attitude_noise_scale: 0.01 # [rad/sqrt(m)] roll / pitch random walk per sqrt(distance)
         min_noise_speed: 1.0        # [m/s] noise floor, keeps refining while stopped
 
     # applied to each scan in the base frame before sampling

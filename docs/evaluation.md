@@ -520,6 +520,44 @@ a floor of `min_noise_speed`.
 ./kitti_evaluation <kitti>/dataset 07 motion=vehicle odometry=wheel base_x=0.86 base_pitch=0.0143
 ```
 
+### The vehicle model as the node default
+
+The node defaults to `motion_model.type: vehicle`; the likelihood and the moves stay free of
+platform assumptions, so the motion model is the one place that knows the platform. With the
+defaults of the time (800 points, CUDA, full odometry, base frame at the rear axle), the vehicle
+model first lost to the twist model:
+
+| motion model | nominal [m] | 3 m off [m] | kidnapped [m] | NEES |
+|---|---|---|---|---|
+| `twist` | 0.061 | 0.060 | 0.079 | 2.2 |
+| `vehicle`, former noise | 0.066 | 0.064 | 0.231 | 6.6 |
+| `vehicle`, all noise x2 | 0.071 | 0.073 | 0.197 | 15 |
+| `vehicle`, all noise x4 | 0.135 | 0.131 | 0.553 | 838 |
+| `vehicle`, twist-like noise | 0.075 | 0.071 | 0.126 | 88 |
+
+More noise made it worse, and worst on the highway (KITTI 01: 0.085 m with the former noise,
+0.447 m with x4): the roll / pitch rate noise was proportional to the speed, so at 25 m/s the
+attitude diffused by 0.25 rad (14 deg) per second. Road grade and bank change with the distance
+traveled, so the attitude now random walks with it: its std grows with sqrt(distance), the rate
+noise with sqrt(|v|) (`attitude_noise_scale` in rad/sqrt(m),
+`AttitudeRandomWalksWithTheDistance`). Then:
+
+| vehicle noise (speed, yaw rate; lateral, vertical; attitude) | nominal [m] | 3 m off [m] | kidnapped [m] | NEES |
+|---|---|---|---|---|
+| former (0.05 \|v\| + 0.05, 0.05 \|w\| + 0.01; 0.02 \|v\|; 0.01) | **0.060** | **0.059** | 0.218 | 4.2 |
+| larger biases (0.1 \|v\| + 0.2, 0.1 \|w\| + 0.04; 0.04 \|v\|; 0.01), min speed 2 m/s | 0.061 | 0.060 | 0.113 | 2.6 |
+| **twist-like (0.1 \|v\| + 0.1, 0.1 \|w\| + 0.02; 0.1 \|v\|; 0.01)** | 0.061 | 0.060 | **0.081** | 3.1 |
+| twist-like, attitude 0.005 | **0.060** | 0.061 | 0.087 | 2.9 |
+
+The twist-like noise is the default: as accurate as the twist model in every scenario (0.061 /
+0.060 / 0.081 against 0.061 / 0.060 / 0.079 m) and consistent. Narrow noise gains nothing near the
+truth and loses the recovery from a wrong pose. The vehicle model keeps the forward / yaw rate
+odometry of a car and the non-holonomic mean motion; with the twist model the same robot needs
+its full twist.
+With wheel-like odometry (forward speed and yaw rate only) on KITTI 07 the two now also match:
+0.055 / 0.051 m, yaw 0.076 / 0.077 deg (vehicle / twist); the 25 % yaw advantage of the table
+above was measured with the former noise and the defaults of that time.
+
 Caveats: map and localized scans come from the same drive (not a test of robustness to map
 changes), the KITTI ground truth itself has errors in the order of 0.1 m, and scans are not
 deskewed. Reproduce:
