@@ -105,34 +105,27 @@ TEST_F(GaussianPosteriorTest, TemperedSmcTargetsThePosterior)
   }
 }
 
-TEST_F(GaussianPosteriorTest, GradientKernelsTargetThePosterior)
+TEST_F(GaussianPosteriorTest, GaussNewtonMovesTargetThePosterior)
 {
-  // the same posterior with Langevin moves: the Metropolis-Hastings correction with the reverse
-  // proposal keeps it exact whatever the preconditioner
-  for (const auto preconditioner :
-       {LangevinMove::Preconditioner::kIsotropic, LangevinMove::Preconditioner::kCluster,
-        LangevinMove::Preconditioner::kGaussNewton}) {
-    TemperedSmcUpdate::Params params;
-    params.max_stages = 30;
-    // isotropic moves mix slowly across axes of different scales (position vs yaw): more steps
-    params.mcmc_steps = preconditioner == LangevinMove::Preconditioner::kIsotropic ? 10 : 3;
-    params.cess_ratio = 0.3;
-    const TemperedSmcUpdate update(params, std::make_shared<LangevinMove>(preconditioner, 1));
-    for (const uint64_t seed : {1, 2}) {
-      ParticleFilter filter(seed);
-      filter.initialize(prior_, 4000);
-      const UpdateResult result =
-        update.apply(filter, PoseMeasurementModel(observation_), contextFor(filter));
-      const auto [mean, covariance] = posterior(filter);
-      const int kind = static_cast<int>(preconditioner);
-      EXPECT_GT(result.statistics.acceptanceRate(), 0.2) << "kind " << kind << ", seed " << seed;
-      for (int k : {0, 1, 5}) {
-        const double stddev = std::sqrt(posterior_covariance_(k, k));
-        EXPECT_NEAR(mean(k), posterior_mean_(k), 0.1 * stddev)
-          << "kind " << kind << ", seed " << seed << ", axis " << k;
-        EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.15)
-          << "kind " << kind << ", seed " << seed << ", axis " << k;
-      }
+  // the same posterior with Gauss-Newton Langevin moves: the Metropolis-Hastings correction with
+  // the reverse proposal keeps it exact
+  TemperedSmcUpdate::Params params;
+  params.max_stages = 30;
+  params.mcmc_steps = 3;
+  params.cess_ratio = 0.3;
+  const TemperedSmcUpdate update(params, std::make_shared<GaussNewtonMove>(1));
+  for (const uint64_t seed : {1, 2}) {
+    ParticleFilter filter(seed);
+    filter.initialize(prior_, 4000);
+    const UpdateResult result =
+      update.apply(filter, PoseMeasurementModel(observation_), contextFor(filter));
+    const auto [mean, covariance] = posterior(filter);
+    EXPECT_GT(result.statistics.acceptanceRate(), 0.2) << "seed " << seed;
+    for (int k : {0, 1, 5}) {
+      const double stddev = std::sqrt(posterior_covariance_(k, k));
+      EXPECT_NEAR(mean(k), posterior_mean_(k), 0.1 * stddev) << "seed " << seed << ", axis " << k;
+      EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.15)
+        << "seed " << seed << ", axis " << k;
     }
   }
 }

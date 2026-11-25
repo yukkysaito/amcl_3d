@@ -27,7 +27,7 @@
 // particles=<n> sample=<n> scan_matching=0|1 scan_matcher=gicp|ndt max_correction=<m>
 // expansion_reset=0|1 seed=<n> frames=<n>
 // linear_noise_scale= linear_noise_bias= angular_noise_scale= angular_noise_bias= (twist motion model)
-// update=importance|annealing|tsmc max_stages=<n> mcmc_steps=<n> kernel=rwm|mala|pmala|gn
+// update=importance|annealing|tsmc max_stages=<n> mcmc_steps=<n> kernel=rwm|gn
 // (scan update; tsmc: tempered SMC with that MCMC kernel)
 // kidnap_frame=<frame> kidnap_offset=<m> (re-initialize off the truth to measure recovery)
 // output=<trajectory.csv> summary=<file> (one JSON line of metrics, appended)
@@ -96,7 +96,7 @@ struct Config
   std::string update;    // importance | annealing (annealing layers, 5 if 0) | tsmc
   size_t max_stages = TemperedSmcUpdate::Params{}.max_stages;
   size_t mcmc_steps = TemperedSmcUpdate::Params{}.mcmc_steps;
-  std::string kernel = "rwm";  // rwm | mala | pmala | gn
+  std::string kernel = "rwm";  // rwm | gn
   double cess = 0.5;
   std::string summary;
   size_t kidnap_frame = 0;       // 0: none
@@ -283,10 +283,7 @@ int main(int argc, char ** argv)
     smc.cess_ratio = config.cess;
     using Kernel = SensorParams::TemperedSmc::Kernel;
     const std::map<std::string, Kernel> kernels{
-      {"rwm", Kernel::kRandomWalk},
-      {"mala", Kernel::kMala},
-      {"pmala", Kernel::kPreconditionedMala},
-      {"gn", Kernel::kGaussNewton}};
+      {"rwm", Kernel::kRandomWalk}, {"gn", Kernel::kGaussNewton}};
     if (kernels.count(config.kernel) == 0) {
       throw std::invalid_argument("unknown kernel: " + config.kernel);
     }

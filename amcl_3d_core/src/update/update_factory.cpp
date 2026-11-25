@@ -24,15 +24,8 @@ std::unique_ptr<const MeasurementUpdate> createMeasurementUpdate(const SensorPar
       case SensorParams::TemperedSmc::Kernel::kRandomWalk:
         kernel = std::make_shared<RandomWalkMetropolis>(threads);
         break;
-      case SensorParams::TemperedSmc::Kernel::kMala:
-        kernel = std::make_shared<LangevinMove>(LangevinMove::Preconditioner::kIsotropic, threads);
-        break;
-      case SensorParams::TemperedSmc::Kernel::kPreconditionedMala:
-        kernel = std::make_shared<LangevinMove>(LangevinMove::Preconditioner::kCluster, threads);
-        break;
       case SensorParams::TemperedSmc::Kernel::kGaussNewton:
-        kernel =
-          std::make_shared<LangevinMove>(LangevinMove::Preconditioner::kGaussNewton, threads);
+        kernel = std::make_shared<GaussNewtonMove>(threads);
         break;
     }
     return std::make_unique<TemperedSmcUpdate>(params, kernel);

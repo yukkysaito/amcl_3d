@@ -66,33 +66,21 @@ public:
   virtual bool usesDerivatives() const { return false; }
 };
 
-/// Gradient-based moves (Metropolis-adjusted Langevin, Roberts & Tweedie, 1996) in the local
-/// frame of each particle: delta = h/2 M g + sqrt(h) M^(1/2) z, x' = retract(x, delta), g the
-/// gradient of log p(x | ancestor) + exponent log L(x), accepted with the Metropolis-Hastings
-/// ratio including the reverse proposal (derivatives at x'). Preconditioners M:
-/// - kIsotropic: MALA, isotropic in units where 1 rad counts as 5 m, with the mean variance of
-///   the cluster.
-/// - kCluster: preconditioned MALA with the cluster covariance (ProposalShape).
-/// - kGaussNewton: the local curvature (exponent H(x) + prior Hessian)^-1, position dependent
-///   (simplified manifold MALA, Girolami & Calderhead, 2011): a Gauss-Newton step plus noise
-///   shaped by the curvature, so poorly constrained directions (along a corridor) get long
-///   moves and well constrained ones short ones.
-/// h is ProposalShape::scale squared. Needs MeasurementModel::computeDerivatives(); falls back to
-/// no move without them. One derivative evaluation per step (the proposals) when the caller keeps
-/// the derivatives of the current particles.
-class LangevinMove : public MoveKernel
+/// Gauss-Newton preconditioned Langevin moves (simplified manifold MALA, Girolami & Calderhead,
+/// 2011) in the local frame of each particle: delta = h/2 M g + sqrt(h) M^(1/2) z,
+/// x' = retract(x, delta), g the gradient of log p(x | ancestor) + exponent log L(x) and
+/// M = (exponent H(x) + prior Hessian)^-1 the local curvature, accepted with the
+/// Metropolis-Hastings ratio including the reverse proposal (derivatives at x'). A Gauss-Newton
+/// step plus noise shaped by the curvature: poorly constrained directions (along a corridor) get
+/// long moves, well constrained ones short ones. h is ProposalShape::scale squared.
+/// Needs MeasurementModel::computeDerivatives(); falls back to no move without them. One
+/// derivative evaluation per step (the proposals) when the caller keeps the derivatives of the
+/// current particles. MALA with an isotropic or the cluster covariance as M was evaluated too
+/// and dropped (docs/evaluation.md).
+class GaussNewtonMove : public MoveKernel
 {
 public:
-  enum class Preconditioner
-  {
-    kIsotropic,
-    kCluster,
-    kGaussNewton,
-  };
-  LangevinMove(Preconditioner preconditioner, size_t thread_num = 4)
-  : preconditioner_(preconditioner), thread_num_(thread_num)
-  {
-  }
+  explicit GaussNewtonMove(size_t thread_num = 4) : thread_num_(thread_num) {}
   bool usesDerivatives() const override { return true; }
   MoveStatistics move(
     ParticleSet & particles, Eigen::VectorXd & log_likelihood, const MoveTarget & target,
@@ -100,7 +88,6 @@ public:
     LogLikelihoodDerivatives * derivatives = nullptr) const override;
 
 private:
-  Preconditioner preconditioner_;
   size_t thread_num_;
 };
 

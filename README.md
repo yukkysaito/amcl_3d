@@ -129,9 +129,9 @@ Localizer                      time handling, resampling policy, recovery, refin
  │           ├─ NdtLikelihood      on GaussianVoxelMap
  │           └─ GicpLikelihood     on GaussianVoxelMap, with scan covariances
  ├─ MeasurementUpdate          per sensor: ImportanceUpdate, AnnealedUpdate, TemperedSmcUpdate
- │   └─ MoveKernel             MCMC moves of tempered SMC: RandomWalkMetropolis, LangevinMove
- │                             (MALA, preconditioned MALA, Gauss-Newton; log-likelihood gradients
- │                             from LikelihoodField on CPU and CUDA, PoseMeasurementModel)
+ │   └─ MoveKernel             MCMC moves of tempered SMC: RandomWalkMetropolis,
+ │                             GaussNewtonMove (log-likelihood gradients and Gauss-Newton
+ │                             curvature from LikelihoodField on CPU and CUDA, PoseMeasurementModel)
  ├─ Resampler                  SystematicResampler, KldResampler
  ├─ ScanFilter
  └─ ScanMatcher                GicpScanMatcher, NdtScanMatcher
@@ -358,9 +358,11 @@ Translation RMSE per sequence (nominal):
 
 ### Gradient-based moves and the default
 
-`LangevinMove` proposes delta = h/2 M g + sqrt(h) M^(1/2) z in the frame of each particle (g the
-gradient of the log target, motion prior included) and accepts with the Metropolis-Hastings ratio
-of the reverse proposal. The gradients come from the nearest map points the likelihood field
+Langevin moves propose delta = h/2 M g + sqrt(h) M^(1/2) z in the frame of each particle (g the
+gradient of the log target, motion prior included) and accept with the Metropolis-Hastings ratio
+of the reverse proposal. Three preconditioners M were evaluated: isotropic (MALA), the cluster
+covariance (preconditioned MALA) and the local Gauss-Newton curvature; only the last one is kept
+(`GaussNewtonMove`, `kernel: gauss_newton`). The gradients come from the nearest map points the likelihood field
 already finds (`PointCloudMap::nearestPoint()`; exact within their Voronoi cells, checked by
 finite differences), on the CPU and on the GPU (17 sufficient statistics per particle reduced in
 the kernel), with the Gauss-Newton curvature for the preconditioner. The derivatives of accepted
@@ -371,8 +373,8 @@ proposals are kept, so a step costs one evaluation like the random walk. Same be
 | annealing (former default) | - | 0.081 | 0.081 | 0.146 | 0.44 | 6 | 5.7 / 1.8 |
 | random walk | 0.5 | **0.071** | **0.073** | 0.117 | 2.79 | 8.4 | 7.1 / 2.3 |
 | **random walk (default)** | 0.15 | 0.075 | 0.075 | **0.104** | 3.38 | **5.3** | **4.8 / 1.8** |
-| MALA | 0.3 | 0.224 | 0.232 | 0.386 | diverges | 5.8 | |
-| preconditioned MALA (cluster covariance) | 0.3 | 0.072 | 0.075 | 0.124 | 3.00 | 6.6 | 8.3 / - |
+| MALA (removed) | 0.3 | 0.224 | 0.232 | 0.386 | diverges | 5.8 | |
+| preconditioned MALA (cluster covariance, removed) | 0.3 | 0.072 | 0.075 | 0.124 | 3.00 | 6.6 | 8.3 / - |
 | Gauss-Newton | 0.3 | **0.071** | **0.071** | 0.173 | 3.03 | 6.6 | |
 | Gauss-Newton | 0.15 | 0.072 | 0.073 | 0.257 | 2.98 | 5.2 | 6.8 / 2.3 |
 
@@ -381,9 +383,11 @@ proposals are kept, so a step costs one evaluation like the random walk. Same be
   consistent: it is the node default now (`scan_tempered_smc`, `scan_max_effective_points: 100`).
 - Gauss-Newton moves are the most accurate near the truth (acceptance 0.47-0.52) but recover
   worse from a wrong pose: the local curvature pulls a particle into the nearest basin, which is
-  what a far-off particle should leave. Preconditioned MALA is in between. Isotropic MALA does not
-  mix in 6 DoF (position and rotation scales differ; acceptance 0.14).
-- All kernels keep the analytic posterior of the Gaussian test (`GradientKernelsTargetThePosterior`).
+  what a far-off particle should leave. It stays as the option for accuracy near the truth.
+- Preconditioned MALA is in between, dominated by the random walk (cheaper, recovers better) and
+  Gauss-Newton (more accurate), and isotropic MALA does not mix in 6 DoF (position and rotation
+  scales differ; acceptance 0.14): both were removed.
+- The kernels keep the analytic posterior of the Gaussian test (`GaussNewtonMovesTargetThePosterior`).
 
 ### Tempering
 

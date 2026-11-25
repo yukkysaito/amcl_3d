@@ -18,7 +18,5 @@ methods:
   tsmc_effective10: {update: tsmc}                     # the likelihood sharpness of the others
   tsmc_budget6: {update: tsmc, effective: 100, max_stages: 5}  # at most 6 evaluations
   rwm_cess015: {update: tsmc, effective: 100, cess: 0.15}
-  mala_cess03: {update: tsmc, effective: 100, kernel: mala, cess: 0.3}
-  pmala_cess03: {update: tsmc, effective: 100, kernel: pmala, cess: 0.3}
   gn_cess03: {update: tsmc, effective: 100, kernel: gn, cess: 0.3}
   gn_cess015: {update: tsmc, effective: 100, kernel: gn, cess: 0.15}

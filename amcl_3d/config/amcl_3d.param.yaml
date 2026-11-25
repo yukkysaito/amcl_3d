@@ -41,9 +41,9 @@
       enabled: true
       max_stages: 8  # the last one takes the rest of the likelihood
       mcmc_steps: 1  # per stage
-      # random_walk | mala | preconditioned_mala | gauss_newton; the gradient kernels need a
-      # likelihood_field (distance field or k-d tree). gauss_newton: 0.071 m nominal but slower
-      # recovery from a wrong pose (README).
+      # random_walk | gauss_newton (Langevin moves along the scan's Gauss-Newton curvature, needs
+      # the likelihood_field): 0.071 m nominal but slower recovery from a wrong pose
+      # (docs/evaluation.md).
       kernel: random_walk
       cess_ratio: 0.15  # conditional ESS / N kept by a stage; lower: fewer, larger stages
     # Annealed particle filter (the former default, exclusive with scan_tempered_smc): layers that
