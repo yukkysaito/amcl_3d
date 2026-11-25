@@ -101,6 +101,25 @@ double TransitionPrior::logDensity(size_t i, const Pose & pose) const
   return -0.5 * eps.dot(information_ * eps);
 }
 
+double TransitionPrior::logDensity(
+  size_t i, const Pose & pose, Vector6d & gradient, Matrix6d & hessian) const
+{
+  if (kind_ != Kind::kGaussian) {
+    gradient.setZero();
+    hessian.setZero();
+    return 0.0;
+  }
+  const Vector6d eps = localDifference(pose, anchors_[i]);
+  // d eps / d delta for pose -> retract(pose, delta): the translation turns with the relative
+  // rotation, the rotation part is the identity to first order
+  Matrix6d jacobian = Matrix6d::Identity();
+  jacobian.topLeftCorner<3, 3>() =
+    (anchors_[i].orientation.conjugate() * pose.orientation).toRotationMatrix();
+  gradient = -jacobian.transpose() * (information_ * eps);
+  hessian = jacobian.transpose() * information_ * jacobian;
+  return -0.5 * eps.dot(information_ * eps);
+}
+
 void TransitionPrior::updateInformation()
 {
   const Eigen::SelfAdjointEigenSolver<Matrix6d> solver(

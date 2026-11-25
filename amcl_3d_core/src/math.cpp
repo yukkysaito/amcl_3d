@@ -119,4 +119,11 @@ Pose compose(const Pose & pose, const Pose & increment)
   return result;
 }
 
+Eigen::Matrix3d skew(const Eigen::Vector3d & v)
+{
+  Eigen::Matrix3d m;
+  m << 0.0, -v.z(), v.y(), v.z(), 0.0, -v.x(), -v.y(), v.x(), 0.0;
+  return m;
+}
+
 }  // namespace amcl_3d

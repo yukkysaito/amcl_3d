@@ -27,6 +27,16 @@ public:
   /// `points` are in the base frame; the caller filters and samples them beforehand.
   virtual Eigen::VectorXd logLikelihood(
     const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points) const = 0;
+  /// logLikelihood() with derivatives (see LogLikelihoodDerivatives); false if unsupported.
+  virtual bool logLikelihoodDerivatives(
+    const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points,
+    LogLikelihoodDerivatives & derivatives) const
+  {
+    static_cast<void>(particles);
+    static_cast<void>(points);
+    static_cast<void>(derivatives);
+    return false;
+  }
 
   /// The measurement model of one scan: scores `sampled`, drawn from `scan` (the whole filtered
   /// scan, base frame). Likelihoods that need the local shape of the scan around each point (e.g.

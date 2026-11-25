@@ -11,12 +11,6 @@ namespace amcl_3d
 {
 namespace
 {
-Eigen::Matrix3d skew(const Eigen::Vector3d & v)
-{
-  Eigen::Matrix3d m;
-  m << 0.0, -v.z(), v.y(), v.z(), 0.0, -v.x(), -v.y(), v.x(), 0.0;
-  return m;
-}
 
 /// Left Jacobian of SO(3): translation part of the SE(3) exponential.
 Eigen::Matrix3d leftJacobian(const Eigen::Vector3d & rotation_vector)

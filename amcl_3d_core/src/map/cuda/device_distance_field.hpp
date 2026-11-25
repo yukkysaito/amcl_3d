@@ -50,6 +50,15 @@ public:
     const std::vector<Transform> & transforms, const std::vector<float> & points,
     float clip_squared, std::vector<double> & sums);
 
+  /// Terms of the derivatives (PointCloudMap::sumClippedSquaredDistanceDerivatives()), per
+  /// particle kDerivativeTerms doubles: sum of clipped squared distances, then over the unclipped
+  /// points: sum u (3), sum p x u (3), count, sum p (3), sum p p^T (xx, xy, xz, yy, yz, zz), with
+  /// p the point and u = R^T (T p - site). Throws std::runtime_error.
+  static constexpr int kDerivativeTerms = 17;
+  void sumClippedSquaredDistanceTerms(
+    const std::vector<Transform> & transforms, const std::vector<float> & points,
+    float clip_squared, std::vector<double> & terms);
+
   size_t memoryBytes() const;
 
 private:

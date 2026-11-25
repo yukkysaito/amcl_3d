@@ -18,6 +18,8 @@ public:
     std::shared_ptr<const PointCloudLikelihood> likelihood, std::vector<Eigen::Vector3d> points);
 
   LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override;
+  bool computeDerivatives(
+    const ParticleSet & particles, LogLikelihoodDerivatives & derivatives) const override;
 
 private:
   std::shared_ptr<const PointCloudLikelihood> likelihood_;

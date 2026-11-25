@@ -27,24 +27,29 @@
     initial_particle_num: 500
     scan_sample_num: 200  # scan points per update (0: all)
     # A scan counts as at most this many independent points: its points are strongly correlated,
-    # and treating them as independent makes the filter overconfident. 5-10 cut the error by
-    # 25-40 % on KITTI 07; 0 disables the limit.
-    scan_max_effective_points: 10
-    # Annealed particle filter: before each scan update, this many layers weight the particles by
-    # a softened likelihood, resample and move them, so the cloud gathers where the scan fits
-    # instead of where the motion model scattered it. Per layer with 500 particles: ~1.7 ms on the
-    # CPU, 0.03 ms with point_cloud_likelihood.likelihood_field.map.device: cuda;
-    # 5 layers: KITTI 07 0.092-0.105 -> 0.043-0.045 m (sigma 0.1, 500 points). 0: off.
-    scan_annealing_layers: 5
-    # Adaptive tempered SMC with MCMC moves instead of annealing (set scan_annealing_layers: 0):
-    # the scan enters in as many stages as its sharpness needs, the moves keep the motion prior, so
-    # the particle covariance is consistent (NEES 2.8 / 3) and a sharper likelihood can be used
-    # (scan_max_effective_points: 100). KITTI, 6 sequences: 0.081 -> 0.071 m at 8.4 instead of 6
-    # likelihood evaluations per scan (README).
+    # and treating them as independent makes the filter overconfident. With tempered SMC the
+    # likelihood enters in stages and can be sharper: 100 gives a consistent covariance (NEES ~3);
+    # a single update (both scan_tempered_smc.enabled: false and scan_annealing_layers: 0) needs
+    # 5-10. 0 disables the limit.
+    scan_max_effective_points: 100
+    # Adaptive tempered SMC with MCMC moves: the scan enters in as many stages as its sharpness
+    # needs (conditional ESS kept at cess_ratio N), the moves keep the motion prior, so the
+    # particle covariance matches the error. KITTI, 6 sequences x 3 seeds, against 5 annealing
+    # layers: 0.081 -> 0.075 m, kidnapped 0.146 -> 0.104 m, at 5.3 instead of 6 likelihood
+    # evaluations per scan (README).
     scan_tempered_smc:
-      enabled: false
+      enabled: true
       max_stages: 8  # the last one takes the rest of the likelihood
       mcmc_steps: 1  # per stage
+      # random_walk | mala | preconditioned_mala | gauss_newton; the gradient kernels need a
+      # likelihood_field (distance field or k-d tree). gauss_newton: 0.071 m nominal but slower
+      # recovery from a wrong pose (README).
+      kernel: random_walk
+      cess_ratio: 0.15  # conditional ESS / N kept by a stage; lower: fewer, larger stages
+    # Annealed particle filter (the former default, exclusive with scan_tempered_smc): layers that
+    # weight the particles by a softened likelihood, resample and move them. Not a consistent
+    # update (README); 5 layers with scan_max_effective_points: 10 and tempered SMC off.
+    scan_annealing_layers: 0
     # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
     # at their own time by replaying the newer scans [s]; costs one particle set per scan of memory.
     max_measurement_delay: 1.0

@@ -2,8 +2,10 @@
 
 #include <Eigen/Core>
 #include <cstddef>
+#include <vector>
 
 #include "amcl_3d_core/particle_set.hpp"
+#include "amcl_3d_core/types.hpp"
 
 namespace amcl_3d
 {
@@ -13,6 +15,18 @@ struct LogLikelihood
   Eigen::VectorXd values;
   /// Number of independent observations combined in `values` (e.g. scan points). Used to compute
   /// the per-observation likelihood for augmented MCL, which would otherwise underflow.
+  size_t observation_num = 1;
+};
+
+/// LogLikelihood with derivatives with respect to the local perturbation eps of each pose,
+/// retract(pose, eps) = (t + R eps_t, R Exp(eps_r)).
+struct LogLikelihoodDerivatives
+{
+  Eigen::VectorXd values;
+  std::vector<Vector6d> gradients;
+  /// Gauss-Newton approximation of the negative Hessian (positive semi-definite), the curvature of
+  /// the log-likelihood: preconditioner of gradient moves.
+  std::vector<Matrix6d> hessians;
   size_t observation_num = 1;
 };
 
@@ -33,6 +47,15 @@ class MeasurementModel
 public:
   virtual ~MeasurementModel() = default;
   virtual LogLikelihood computeLogLikelihood(const ParticleSet & particles) const = 0;
+  /// Values and derivatives (gradient moves). false: not available for this model; the values
+  /// must equal computeLogLikelihood() otherwise.
+  virtual bool computeDerivatives(
+    const ParticleSet & particles, LogLikelihoodDerivatives & derivatives) const
+  {
+    static_cast<void>(particles);
+    static_cast<void>(derivatives);
+    return false;
+  }
 };
 
 }  // namespace amcl_3d

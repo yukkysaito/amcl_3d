@@ -26,6 +26,20 @@ double KdTreeMap::squaredDistanceToNearest(const Eigen::Vector3d & point) const
   return static_cast<double>(squared_distances.front());
 }
 
+std::optional<Eigen::Vector3d> KdTreeMap::nearestPoint(const Eigen::Vector3d & point) const
+{
+  const pcl::PointXYZ query(
+    static_cast<float>(point.x()), static_cast<float>(point.y()), static_cast<float>(point.z()));
+  std::vector<int> indices(1);
+  std::vector<float> squared_distances(1);
+  if (kdtree_.nearestKSearch(query, 1, indices, squared_distances) <= 0) {
+    return std::nullopt;
+  }
+  return (*kdtree_.getInputCloud())[static_cast<size_t>(indices.front())]
+    .getVector3fMap()
+    .cast<double>();
+}
+
 std::string KdTreeMap::description() const
 {
   return "k-d tree over " + std::to_string(kdtree_.getInputCloud()->size()) + " points";

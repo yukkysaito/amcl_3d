@@ -14,6 +14,9 @@ public:
   explicit PoseMeasurementModel(const PoseWithCovariance & observation);
 
   LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override;
+  /// d e / d eps = blockdiag(R, R) to first order in the rotation error.
+  bool computeDerivatives(
+    const ParticleSet & particles, LogLikelihoodDerivatives & derivatives) const override;
 
 private:
   Pose observed_pose_;

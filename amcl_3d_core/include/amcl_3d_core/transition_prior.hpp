@@ -50,6 +50,9 @@ public:
 
   /// log p(pose | particle i's ancestor) up to a constant; 0 for kFlat.
   double logDensity(size_t i, const Pose & pose) const;
+  /// logDensity() with its gradient and negative Hessian with respect to the local perturbation
+  /// of `pose` (retract()), to first order in the distance to the anchor.
+  double logDensity(size_t i, const Pose & pose, Vector6d & gradient, Matrix6d & hessian) const;
 
 private:
   void updateInformation();

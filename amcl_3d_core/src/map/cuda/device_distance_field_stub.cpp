@@ -29,6 +29,12 @@ void DeviceDistanceField::sumClippedSquaredDistances(
   throw std::runtime_error("amcl_3d_core was built without CUDA (-DAMCL3D_USE_CUDA=ON)");
 }
 
+void DeviceDistanceField::sumClippedSquaredDistanceTerms(
+  const std::vector<Transform> &, const std::vector<float> &, float, std::vector<double> &)
+{
+  throw std::runtime_error("amcl_3d_core was built without CUDA (-DAMCL3D_USE_CUDA=ON)");
+}
+
 size_t DeviceDistanceField::memoryBytes() const { return 0; }
 
 }  // namespace cuda

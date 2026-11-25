@@ -20,6 +20,9 @@ Eigen::Quaterniond expMap(const Eigen::Vector3d & rotation_vector);
 /// Quaternion -> rotation vector (axis * angle) with angle in [0, pi].
 Eigen::Vector3d logMap(const Eigen::Quaterniond & q);
 
+/// Cross product matrix: skew(a) * b = a x b.
+Eigen::Matrix3d skew(const Eigen::Vector3d & v);
+
 /// Pose perturbed in its own frame by eps = (translation, rotation vector):
 /// (t + R eps_t, R Exp(eps_r)). To first order the right SE(3) perturbation pose * Exp(eps).
 Pose retract(const Pose & pose, const Eigen::Matrix<double, 6, 1> & eps);

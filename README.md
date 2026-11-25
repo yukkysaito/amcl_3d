@@ -100,8 +100,10 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Scan preprocessing**: range / height crop, voxel grid, random subsampling
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
 - **Recovery**: augmented MCL, expansion resetting (statistics per sensor), global localization
-- **Tempered SMC**: adaptive tempered SMC with MCMC moves (`scan_tempered_smc`), the consistent
-  alternative to annealing: the posterior covariance matches the error (NEES 2.8 / 3)
+- **Tempered SMC** (default): adaptive tempered SMC with MCMC moves (`scan_tempered_smc`;
+  random walk, MALA, preconditioned MALA or Gauss-Newton moves), the consistent alternative to
+  annealing: the posterior covariance matches the error (NEES ~3), and at the same cost it is
+  more accurate (0.081 -> 0.075 m on 6 KITTI sequences)
 - **Annealing**: annealed particle filter layers before each scan update
   (`scan_annealing_layers`), which gather the cloud where the scan fits rather than where the
   motion model scattered it
@@ -127,7 +129,9 @@ Localizer                      time handling, resampling policy, recovery, refin
  │           ├─ NdtLikelihood      on GaussianVoxelMap
  │           └─ GicpLikelihood     on GaussianVoxelMap, with scan covariances
  ├─ MeasurementUpdate          per sensor: ImportanceUpdate, AnnealedUpdate, TemperedSmcUpdate
- │   └─ MoveKernel             MCMC moves of tempered SMC: RandomWalkMetropolis
+ │   └─ MoveKernel             MCMC moves of tempered SMC: RandomWalkMetropolis, LangevinMove
+ │                             (MALA, preconditioned MALA, Gauss-Newton; log-likelihood gradients
+ │                             from LikelihoodField on CPU and CUDA, PoseMeasurementModel)
  ├─ Resampler                  SystematicResampler, KldResampler
  ├─ ScanFilter
  └─ ScanMatcher                GicpScanMatcher, NdtScanMatcher
@@ -293,7 +297,8 @@ one at a time to the defaults (500 particles, default motion noise), 3 seeds:
   configuration, about half lie where the ground truth disagrees with the map by more than 3 cm;
   on the others, 4-6 % of the frames exceed 5 cm.
 
-The node ships with `scan_annealing_layers: 5` in `amcl_3d.param.yaml` (the library default is 0).
+The node used `scan_annealing_layers: 5` until tempered SMC replaced it (next sections); the
+library default is 0.
 
 ### Tempered SMC
 
@@ -346,10 +351,39 @@ Translation RMSE per sequence (nominal):
   resampling with clamped eigenvalues (1 rad counted as 5 m), scaled by 2.38 / sqrt(6) and adapted
   to a 0.3 acceptance rate (measured 0.29-0.31).
 - **Budget**: `max_stages` caps the cost; capped at annealing's 6 evaluations, the forced last
-  stage degenerates (NEES 59) and annealing is more accurate. Gradient-based moves are the next
-  step to do better at the same cost.
+  stage degenerates (NEES 59). A lower conditional ESS target does better at that budget (next
+  section).
 - **Delayed scans**: moves break the genealogy that reweighting a late measurement relies on, so
   states updated with moves (annealing too) make late measurements replay instead.
+
+### Gradient-based moves and the default
+
+`LangevinMove` proposes delta = h/2 M g + sqrt(h) M^(1/2) z in the frame of each particle (g the
+gradient of the log target, motion prior included) and accepts with the Metropolis-Hastings ratio
+of the reverse proposal. The gradients come from the nearest map points the likelihood field
+already finds (`PointCloudMap::nearestPoint()`; exact within their Voronoi cells, checked by
+finite differences), on the CPU and on the GPU (17 sufficient statistics per particle reduced in
+the kernel), with the Gauss-Newton curvature for the preconditioner. The derivatives of accepted
+proposals are kept, so a step costs one evaluation like the random walk. Same benchmark as above:
+
+| method | conditional ESS | nominal RMSE [m] | 3 m off | kidnapped | NEES | evaluations | KITTI 07 CPU / CUDA [ms] |
+|---|---|---|---|---|---|---|---|
+| annealing (former default) | - | 0.081 | 0.081 | 0.146 | 0.44 | 6 | 5.7 / 1.8 |
+| random walk | 0.5 | **0.071** | **0.073** | 0.117 | 2.79 | 8.4 | 7.1 / 2.3 |
+| **random walk (default)** | 0.15 | 0.075 | 0.075 | **0.104** | 3.38 | **5.3** | **4.8 / 1.8** |
+| MALA | 0.3 | 0.224 | 0.232 | 0.386 | diverges | 5.8 | |
+| preconditioned MALA (cluster covariance) | 0.3 | 0.072 | 0.075 | 0.124 | 3.00 | 6.6 | 8.3 / - |
+| Gauss-Newton | 0.3 | **0.071** | **0.071** | 0.173 | 3.03 | 6.6 | |
+| Gauss-Newton | 0.15 | 0.072 | 0.073 | 0.257 | 2.98 | 5.2 | 6.8 / 2.3 |
+
+- At the cost of annealing or less, tempered SMC with random walk moves and a conditional ESS
+  of 0.15 (fewer, larger stages) is more accurate in every scenario and its covariance is
+  consistent: it is the node default now (`scan_tempered_smc`, `scan_max_effective_points: 100`).
+- Gauss-Newton moves are the most accurate near the truth (acceptance 0.47-0.52) but recover
+  worse from a wrong pose: the local curvature pulls a particle into the nearest basin, which is
+  what a far-off particle should leave. Preconditioned MALA is in between. Isotropic MALA does not
+  mix in 6 DoF (position and rotation scales differ; acceptance 0.14).
+- All kernels keep the analytic posterior of the Gaussian test (`GradientKernelsTargetThePosterior`).
 
 ### Tempering
 

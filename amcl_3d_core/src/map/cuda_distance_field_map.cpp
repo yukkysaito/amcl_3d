@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "amcl_3d_core/math.hpp"
 #include "map/cuda/device_distance_field.hpp"
 
 namespace amcl_3d
@@ -95,6 +96,52 @@ Eigen::VectorXd CudaDistanceFieldMap::sumClippedSquaredDistances(
   device_field_->sumClippedSquaredDistances(
     transforms, flat_points, static_cast<float>(clip * clip), sums);
   return Eigen::Map<const Eigen::VectorXd>(sums.data(), static_cast<Eigen::Index>(sums.size()));
+}
+
+bool CudaDistanceFieldMap::sumClippedSquaredDistanceDerivatives(
+  const ParticleSet & particles, const std::vector<Eigen::Vector3d> & points, double clip_distance,
+  size_t /*thread_num*/, Eigen::VectorXd & sums, std::vector<Vector6d> & gradients,
+  std::vector<Matrix6d> & hessians) const
+{
+  const double clip = std::min(clip_distance, field_->maxDistance());
+  using RowMajorMatrix3f = Eigen::Matrix<float, 3, 3, Eigen::RowMajor>;
+  std::vector<cuda::Transform> transforms(particles.size());
+  for (size_t i = 0; i < particles.size(); ++i) {
+    const Pose pose = particles.pose(i);
+    Eigen::Map<RowMajorMatrix3f> rotation(transforms[i].rotation);
+    Eigen::Map<Eigen::Vector3f> translation(transforms[i].translation);
+    rotation = pose.orientation.toRotationMatrix().cast<float>();
+    translation = (pose.position - origin_).cast<float>();
+  }
+  std::vector<float> flat_points(points.size() * 3);
+  for (size_t k = 0; k < points.size(); ++k) {
+    Eigen::Map<Eigen::Vector3f> point(&flat_points[k * 3]);
+    point = points[k].cast<float>();
+  }
+  std::vector<double> terms;
+  device_field_->sumClippedSquaredDistanceTerms(
+    transforms, flat_points, static_cast<float>(clip * clip), terms);
+
+  constexpr int kTerms = cuda::DeviceDistanceField::kDerivativeTerms;
+  sums.resize(static_cast<Eigen::Index>(particles.size()));
+  gradients.resize(particles.size());
+  hessians.resize(particles.size());
+  for (size_t i = 0; i < particles.size(); ++i) {
+    const double * t = &terms[i * kTerms];
+    sums(static_cast<Eigen::Index>(i)) = t[0];
+    gradients[i] << 2.0 * t[1], 2.0 * t[2], 2.0 * t[3], 2.0 * t[4], 2.0 * t[5], 2.0 * t[6];
+    // 2 sum [I, -[p]x; [p]x, -[p]x^2] = 2 [n I, -[S]x; [S]x, tr(P) I - P], S = sum p, P = sum p p^T
+    const Eigen::Vector3d s(t[8], t[9], t[10]);
+    Eigen::Matrix3d p;
+    p << t[11], t[12], t[13], t[12], t[14], t[15], t[13], t[15], t[16];
+    Matrix6d & h = hessians[i];
+    h.topLeftCorner<3, 3>() = t[7] * Eigen::Matrix3d::Identity();
+    h.topRightCorner<3, 3>() = -skew(s);
+    h.bottomLeftCorner<3, 3>() = skew(s);
+    h.bottomRightCorner<3, 3>() = p.trace() * Eigen::Matrix3d::Identity() - p;
+    h *= 2.0;
+  }
+  return true;
 }
 
 std::string CudaDistanceFieldMap::description() const

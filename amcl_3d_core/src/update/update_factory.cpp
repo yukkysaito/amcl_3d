@@ -17,8 +17,25 @@ std::unique_ptr<const MeasurementUpdate> createMeasurementUpdate(const SensorPar
     TemperedSmcUpdate::Params params;
     params.max_stages = sensor.tempered_smc.max_stages;
     params.mcmc_steps = sensor.tempered_smc.mcmc_steps;
-    return std::make_unique<TemperedSmcUpdate>(
-      params, std::make_shared<RandomWalkMetropolis>(sensor.tempered_smc.thread_num));
+    params.cess_ratio = sensor.tempered_smc.cess_ratio;
+    const size_t threads = sensor.tempered_smc.thread_num;
+    std::shared_ptr<const MoveKernel> kernel;
+    switch (sensor.tempered_smc.kernel) {
+      case SensorParams::TemperedSmc::Kernel::kRandomWalk:
+        kernel = std::make_shared<RandomWalkMetropolis>(threads);
+        break;
+      case SensorParams::TemperedSmc::Kernel::kMala:
+        kernel = std::make_shared<LangevinMove>(LangevinMove::Preconditioner::kIsotropic, threads);
+        break;
+      case SensorParams::TemperedSmc::Kernel::kPreconditionedMala:
+        kernel = std::make_shared<LangevinMove>(LangevinMove::Preconditioner::kCluster, threads);
+        break;
+      case SensorParams::TemperedSmc::Kernel::kGaussNewton:
+        kernel =
+          std::make_shared<LangevinMove>(LangevinMove::Preconditioner::kGaussNewton, threads);
+        break;
+    }
+    return std::make_unique<TemperedSmcUpdate>(params, kernel);
   }
   if (sensor.annealing_layer_num > 0) {
     return std::make_unique<AnnealedUpdate>(sensor.annealing_layer_num);

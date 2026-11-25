@@ -61,7 +61,37 @@ UpdateResult TemperedSmcUpdate::apply(
   UpdateResult result;
   UpdateStatistics & statistics = result.statistics;
   statistics.stages = 0;
-  const LogLikelihood initial = model.computeLogLikelihood(filter.particles());
+  // derivatives of the current particles, kept for kernels that use them
+  LogLikelihoodDerivatives derivatives;
+  const bool keep_derivatives =
+    kernel_->usesDerivatives() && model.computeDerivatives(filter.particles(), derivatives);
+  LogLikelihood initial;
+  if (keep_derivatives) {
+    initial.values = derivatives.values;
+    initial.observation_num = derivatives.observation_num;
+  } else {
+    initial = model.computeLogLikelihood(filter.particles());
+  }
+  auto select = [&](const std::vector<size_t> & parents, Eigen::VectorXd & log_likelihood) {
+    Eigen::VectorXd selected(static_cast<Eigen::Index>(parents.size()));
+    for (size_t j = 0; j < parents.size(); ++j) {
+      selected(static_cast<Eigen::Index>(j)) =
+        log_likelihood(static_cast<Eigen::Index>(parents[j]));
+    }
+    log_likelihood = std::move(selected);
+    if (keep_derivatives) {
+      LogLikelihoodDerivatives d;
+      d.values = log_likelihood;
+      d.observation_num = derivatives.observation_num;
+      d.gradients.reserve(parents.size());
+      d.hessians.reserve(parents.size());
+      for (const size_t parent : parents) {
+        d.gradients.push_back(derivatives.gradients[parent]);
+        d.hessians.push_back(derivatives.hessians[parent]);
+      }
+      derivatives = std::move(d);
+    }
+  };
   result.likelihood = summarize(initial);
   const double tau =
     temperingExponent(initial.observation_num, context.max_effective_observation_num);
@@ -83,13 +113,7 @@ UpdateResult TemperedSmcUpdate::apply(
     statistics.min_ess_ratio = std::min(statistics.min_ess_ratio, ess_ratio);
     if (params_.mcmc_steps == 0 || !filter.transitionPrior().available()) {
       if (ess_ratio < context.ess_ratio_threshold && beta < 1.0) {
-        const std::vector<size_t> parents = context.resample();
-        Eigen::VectorXd selected(static_cast<Eigen::Index>(parents.size()));
-        for (size_t j = 0; j < parents.size(); ++j) {
-          selected(static_cast<Eigen::Index>(j)) =
-            log_likelihood(static_cast<Eigen::Index>(parents[j]));
-        }
-        log_likelihood = std::move(selected);
+        select(context.resample(), log_likelihood);
       }
       continue;
     }
@@ -99,19 +123,14 @@ UpdateResult TemperedSmcUpdate::apply(
     shape.scale = scale;
     if (ess_ratio < context.ess_ratio_threshold) {
       const std::vector<size_t> parents = context.resample();
-      Eigen::VectorXd selected(static_cast<Eigen::Index>(parents.size()));
-      for (size_t j = 0; j < parents.size(); ++j) {
-        selected(static_cast<Eigen::Index>(j)) =
-          log_likelihood(static_cast<Eigen::Index>(parents[j]));
-      }
-      log_likelihood = std::move(selected);
+      select(parents, log_likelihood);
       shape.select(parents);
     }
     const MoveTarget target{model, tau * beta, filter.transitionPrior()};
     for (size_t step = 0; step < params_.mcmc_steps; ++step) {
       const MoveStatistics moved = kernel_->move(
-        filter.mutableParticles(), log_likelihood, target, shape,
-        drawKey(filter.randomGenerator()));
+        filter.mutableParticles(), log_likelihood, target, shape, drawKey(filter.randomGenerator()),
+        keep_derivatives ? &derivatives : nullptr);
       statistics.proposals += moved.proposals;
       statistics.accepted += moved.accepted;
       statistics.likelihood_evaluations += moved.likelihood_evaluations;

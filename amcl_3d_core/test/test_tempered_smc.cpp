@@ -1,16 +1,22 @@
 #include <gtest/gtest.h>
 
+#include <Eigen/Eigenvalues>
 #include <memory>
+#include <random>
 
+#include "amcl_3d_core/map/distance_field_map.hpp"
+#include "amcl_3d_core/map/kdtree_map.hpp"
 #include "amcl_3d_core/math.hpp"
 #include "amcl_3d_core/measurement_model/pose_measurement_model.hpp"
 #include "amcl_3d_core/motion_model/twist_motion_model.hpp"
 #include "amcl_3d_core/motion_model/vehicle_motion_model.hpp"
 #include "amcl_3d_core/particle_filter.hpp"
+#include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/resampler/systematic_resampler.hpp"
 #include "amcl_3d_core/transition_prior.hpp"
 #include "amcl_3d_core/update/annealed_update.hpp"
 #include "amcl_3d_core/update/tempered_smc_update.hpp"
+#include "test_utils.hpp"
 
 namespace amcl_3d
 {
@@ -99,6 +105,38 @@ TEST_F(GaussianPosteriorTest, TemperedSmcTargetsThePosterior)
   }
 }
 
+TEST_F(GaussianPosteriorTest, GradientKernelsTargetThePosterior)
+{
+  // the same posterior with Langevin moves: the Metropolis-Hastings correction with the reverse
+  // proposal keeps it exact whatever the preconditioner
+  for (const auto preconditioner :
+       {LangevinMove::Preconditioner::kIsotropic, LangevinMove::Preconditioner::kCluster,
+        LangevinMove::Preconditioner::kGaussNewton}) {
+    TemperedSmcUpdate::Params params;
+    params.max_stages = 30;
+    // isotropic moves mix slowly across axes of different scales (position vs yaw): more steps
+    params.mcmc_steps = preconditioner == LangevinMove::Preconditioner::kIsotropic ? 10 : 3;
+    params.cess_ratio = 0.3;
+    const TemperedSmcUpdate update(params, std::make_shared<LangevinMove>(preconditioner, 1));
+    for (const uint64_t seed : {1, 2}) {
+      ParticleFilter filter(seed);
+      filter.initialize(prior_, 4000);
+      const UpdateResult result =
+        update.apply(filter, PoseMeasurementModel(observation_), contextFor(filter));
+      const auto [mean, covariance] = posterior(filter);
+      const int kind = static_cast<int>(preconditioner);
+      EXPECT_GT(result.statistics.acceptanceRate(), 0.2) << "kind " << kind << ", seed " << seed;
+      for (int k : {0, 1, 5}) {
+        const double stddev = std::sqrt(posterior_covariance_(k, k));
+        EXPECT_NEAR(mean(k), posterior_mean_(k), 0.1 * stddev)
+          << "kind " << kind << ", seed " << seed << ", axis " << k;
+        EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.15)
+          << "kind " << kind << ", seed " << seed << ", axis " << k;
+      }
+    }
+  }
+}
+
 TEST_F(GaussianPosteriorTest, AnnealingIsOverconfident)
 {
   // the baseline applies the likelihood once per layer on top of the update (its moves widen
@@ -113,6 +151,58 @@ TEST_F(GaussianPosteriorTest, AnnealingIsOverconfident)
       EXPECT_LT(covariance(k, k), 0.85 * posterior_covariance_(k, k))
         << "seed " << seed << ", axis " << k;
     }
+  }
+}
+
+TEST(LikelihoodFieldDerivatives, MatchFiniteDifferences)
+{
+  const PointCloud::Ptr map = test::makeRoomMap();
+  Pose truth;
+  truth.position = Eigen::Vector3d(3.0, 2.0, 0.3);
+  truth.orientation = test::yawQuaternion(0.3);
+  std::vector<Eigen::Vector3d> points = test::toPoints(*test::makeScan(*map, truth));
+  std::vector<Eigen::Vector3d> sampled;
+  for (size_t i = 0; i < points.size(); i += 40) {
+    sampled.push_back(points[i]);
+  }
+  ParticleSet particles(20);
+  std::mt19937 rng(4);
+  std::normal_distribution<double> n(0.0, 1.0);
+  for (size_t i = 0; i < particles.size(); ++i) {
+    particles.setPose(
+      i, retract(
+           truth, (Vector6d() << 0.1 * n(rng), 0.1 * n(rng), 0.02 * n(rng), 0.01 * n(rng),
+                   0.01 * n(rng), 0.03 * n(rng))
+                    .finished()));
+  }
+  const std::vector<std::shared_ptr<const PointCloudMap>> maps{
+    std::make_shared<KdTreeMap>(map),
+    std::make_shared<DistanceFieldMap>(*map, DistanceFieldMap::Params{0.1, 1.0})};
+  for (const auto & field_map : maps) {
+    const LikelihoodField likelihood(field_map, LikelihoodField::Params{});
+    LogLikelihoodDerivatives d;
+    ASSERT_TRUE(likelihood.logLikelihoodDerivatives(particles, sampled, d));
+    const Eigen::VectorXd values = likelihood.logLikelihood(particles, sampled);
+    // the k-d tree measures distances in single precision
+    EXPECT_LT((d.values - values).cwiseAbs().maxCoeff(), 1e-4 * values.cwiseAbs().maxCoeff());
+    // directional derivatives (the nearest map points do not change within a small step)
+    size_t matching = 0;
+    for (size_t i = 0; i < particles.size(); ++i) {
+      const Vector6d direction = (Vector6d() << 1.0, -0.5, 0.3, 0.02, -0.03, 0.05).finished();
+      constexpr double kStep = 1e-6;
+      ParticleSet moved(2);
+      moved.setPose(0, retract(particles.pose(i), kStep * direction));
+      moved.setPose(1, retract(particles.pose(i), -kStep * direction));
+      LogLikelihoodDerivatives dm;
+      ASSERT_TRUE(likelihood.logLikelihoodDerivatives(moved, sampled, dm));
+      const double numeric = (dm.values(0) - dm.values(1)) / (2.0 * kStep);
+      const double analytic = d.gradients[i].dot(direction);
+      matching += std::abs(numeric - analytic) <= 1e-3 * (1.0 + std::abs(analytic)) ? 1 : 0;
+      // the Gauss-Newton curvature is positive semi-definite
+      EXPECT_GE(
+        Eigen::SelfAdjointEigenSolver<Matrix6d>(d.hessians[i]).eigenvalues().minCoeff(), -1e-9);
+    }
+    EXPECT_GE(matching, particles.size() - 1);  // a step may cross a Voronoi boundary
   }
 }
 
