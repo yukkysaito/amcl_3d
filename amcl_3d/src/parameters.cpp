@@ -238,6 +238,23 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   p.point_cloud_sensor.annealing_layer_num = declareCount(
     node, "scan_annealing_layers", defaults.point_cloud_sensor.annealing_layer_num,
     "Annealing layers run before each scan update (annealed particle filter; 0: off)");
+  auto & smc = p.point_cloud_sensor.tempered_smc;
+  smc.enabled = declare<bool>(
+    node, "scan_tempered_smc.enabled", smc.enabled,
+    "Fuse scans by adaptive tempered SMC with MCMC moves (exclusive with scan_annealing_layers)");
+  smc.max_stages = declareCount(
+    node, "scan_tempered_smc.max_stages", smc.max_stages,
+    "Most tempering stages per scan; the last one takes the rest of the likelihood");
+  smc.mcmc_steps =
+    declareCount(node, "scan_tempered_smc.mcmc_steps", smc.mcmc_steps, "MCMC steps per stage");
+  smc.thread_num = thread_num;
+  if (smc.enabled && p.point_cloud_sensor.annealing_layer_num > 0) {
+    throw std::invalid_argument(
+      "parameters 'scan_tempered_smc.enabled' and 'scan_annealing_layers' are exclusive");
+  }
+  if (smc.enabled && smc.max_stages == 0) {
+    throw std::invalid_argument("parameter 'scan_tempered_smc.max_stages' must be positive");
+  }
   p.max_measurement_delay = declare<double>(
     node, "max_measurement_delay", defaults.max_measurement_delay,
     "Measurements and odometry up to this much older than the newest scan are fused at their "

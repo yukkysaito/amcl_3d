@@ -1,0 +1,19 @@
+# kitti_benchmark.py: every method is run on every sequence x seed x scenario.
+#   tools/kitti_benchmark.py tools/config/benchmark.yaml --binary <build>/kitti_evaluation --jobs 12
+dataset: ~/datasets/kitti/dataset
+binary: kitti_evaluation
+sequences: ["07", "03", "04", "06", "10", "01"]
+seeds: [1, 2, 3]
+common:
+  threads: 2
+scenarios:
+  nominal: {}                                          # 0.5 m / 1.7 deg off
+  offset_3m: {init_offset: 3.0, init_yaw_offset: 0.15}
+  # a confident false relocalization 5 m off at frame 151, recovered by expansion resetting
+  kidnapped: {kidnap_frame: 151, kidnap_offset: 5.0, expansion_reset: 1}
+methods:
+  importance: {}
+  annealing: {update: annealing}                       # 5 layers: 6 likelihood evaluations
+  tsmc: {update: tsmc, effective: 100}
+  tsmc_effective10: {update: tsmc}                     # the likelihood sharpness of the others
+  tsmc_budget6: {update: tsmc, effective: 100, max_stages: 5}  # at most 6 evaluations

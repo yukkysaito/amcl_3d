@@ -5,10 +5,40 @@
 #include <random>
 
 #include "amcl_3d_core/motion_model/twist_motion_model.hpp"
+#include "motion_model/linearize_step.hpp"
 #include "motion_model/parallel_prediction.hpp"
 
 namespace amcl_3d
 {
+std::optional<LinearizedMotion> VehicleMotionModel::linearize(const Twist & twist, double dt) const
+{
+  if (!(dt > 0.0)) {
+    return std::nullopt;
+  }
+  // the noise of predict()
+  const double speed = twist.linear.x();
+  const double yaw_rate = twist.angular.z();
+  const double inv_sqrt_dt = 1.0 / std::sqrt(dt);
+  const double abs_speed = std::max(std::abs(speed), params_.min_noise_speed);
+  const double speed_stddev =
+    (params_.speed_noise_scale * abs_speed + params_.speed_noise_bias) * inv_sqrt_dt;
+  const double yaw_rate_stddev =
+    (params_.yaw_rate_noise_scale * std::abs(yaw_rate) + params_.yaw_rate_noise_bias) * inv_sqrt_dt;
+  const double lateral_stddev = params_.lateral_noise_scale * abs_speed * inv_sqrt_dt;
+  const double vertical_stddev = params_.vertical_noise_scale * abs_speed * inv_sqrt_dt;
+  const double attitude_stddev = params_.attitude_noise_scale * abs_speed * inv_sqrt_dt;
+  return linearizeStep([&](const Vector6d & noise) {
+    Twist noisy;
+    noisy.linear.x() = speed + speed_stddev * noise(0);
+    noisy.linear.y() = lateral_stddev * noise(1);
+    noisy.linear.z() = vertical_stddev * noise(2);
+    noisy.angular.x() = attitude_stddev * noise(3);
+    noisy.angular.y() = attitude_stddev * noise(4);
+    noisy.angular.z() = yaw_rate + yaw_rate_stddev * noise(5);
+    return TwistMotionModel::integrate(Pose{}, noisy, dt);
+  });
+}
+
 void VehicleMotionModel::predict(
   const Twist & twist, double dt, ParticleSet & particles, RandomGenerator & rng) const
 {

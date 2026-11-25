@@ -4,6 +4,7 @@
 #include <random>
 
 #include "amcl_3d_core/math.hpp"
+#include "motion_model/linearize_step.hpp"
 #include "motion_model/parallel_prediction.hpp"
 
 namespace amcl_3d
@@ -51,6 +52,25 @@ Twist TwistMotionModel::twistBetween(const Pose & from, const Pose & to, double 
   twist.angular = rotation_vector / dt;
   twist.linear = leftJacobian(rotation_vector).inverse() * local_translation / dt;
   return twist;
+}
+
+std::optional<LinearizedMotion> TwistMotionModel::linearize(const Twist & twist, double dt) const
+{
+  if (!(dt > 0.0)) {
+    return std::nullopt;
+  }
+  // the noise of predict()
+  const double inv_sqrt_dt = 1.0 / std::sqrt(dt);
+  const double linear_stddev =
+    (params_.linear_noise_scale * twist.linear.norm() + params_.linear_noise_bias) * inv_sqrt_dt;
+  const double angular_stddev =
+    (params_.angular_noise_scale * twist.angular.norm() + params_.angular_noise_bias) * inv_sqrt_dt;
+  return linearizeStep([&](const Vector6d & noise) {
+    Twist noisy = twist;
+    noisy.linear += linear_stddev * noise.head<3>();
+    noisy.angular += angular_stddev * noise.tail<3>();
+    return integrate(Pose{}, noisy, dt);
+  });
 }
 
 void TwistMotionModel::predict(

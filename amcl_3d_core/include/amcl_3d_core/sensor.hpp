@@ -56,6 +56,18 @@ struct SensorParams
   /// evaluation per layer. Like expansion resetting, the moves are not motion: a delayed
   /// measurement fused by reweighting (DelayedFusion::kReweight) scores moved descendants. 0: off.
   size_t annealing_layer_num = 0;
+
+  /// Fuses each measurement by adaptive tempered SMC with MCMC moves (TemperedSmcUpdate), the
+  /// consistent alternative to annealing: the likelihood enters in as many stages as its
+  /// sharpness needs (at most max_stages), and the moves keep the motion prior. Exclusive with
+  /// annealing_layer_num. Moves change the genealogy: delayed measurements are then replayed.
+  struct TemperedSmc
+  {
+    bool enabled = false;
+    size_t max_stages = 8;
+    size_t mcmc_steps = 1;  // per stage
+    size_t thread_num = 4;  // proposals and acceptance (CPU threads, 0: all)
+  } tempered_smc;
 };
 
 }  // namespace amcl_3d

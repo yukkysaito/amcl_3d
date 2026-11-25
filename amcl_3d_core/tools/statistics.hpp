@@ -22,8 +22,10 @@ struct Errors
 {
   std::vector<double> translation;  // [m], horizontal
   std::vector<double> yaw;          // [rad]
+  std::vector<double> rotation;     // [rad], 3D
   void add(const Pose & estimate, const Pose & truth)
   {
+    rotation.push_back(estimate.orientation.angularDistance(truth.orientation));
     translation.push_back((estimate.position - truth.position).head<2>().norm());
     const double d = yawOf(estimate.orientation) - yawOf(truth.orientation);
     yaw.push_back(std::abs(std::atan2(std::sin(d), std::cos(d))));
@@ -32,12 +34,12 @@ struct Errors
 
 struct Summary
 {
-  double rmse, mean, p95, max;
+  double rmse, mean, p95, p99, max;
 };
 
 inline Summary summarize(std::vector<double> values)
 {
-  Summary s{0, 0, 0, 0};
+  Summary s{0, 0, 0, 0, 0};
   if (values.empty()) {
     return s;
   }
@@ -50,6 +52,7 @@ inline Summary summarize(std::vector<double> values)
   s.rmse = std::sqrt(squares / values.size());
   s.mean = sum / values.size();
   s.p95 = values[static_cast<size_t>(0.95 * (values.size() - 1))];
+  s.p99 = values[static_cast<size_t>(0.99 * (values.size() - 1))];
   s.max = values.back();
   return s;
 }

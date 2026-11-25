@@ -100,6 +100,8 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Scan preprocessing**: range / height crop, voxel grid, random subsampling
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
 - **Recovery**: augmented MCL, expansion resetting (statistics per sensor), global localization
+- **Tempered SMC**: adaptive tempered SMC with MCMC moves (`scan_tempered_smc`), the consistent
+  alternative to annealing: the posterior covariance matches the error (NEES 2.8 / 3)
 - **Annealing**: annealed particle filter layers before each scan update
   (`scan_annealing_layers`), which gather the cloud where the scan fits rather than where the
   motion model scattered it
@@ -124,6 +126,8 @@ Localizer                      time handling, resampling policy, recovery, refin
  │           │                     CudaDistanceFieldMap (batched over particles x points)
  │           ├─ NdtLikelihood      on GaussianVoxelMap
  │           └─ GicpLikelihood     on GaussianVoxelMap, with scan covariances
+ ├─ MeasurementUpdate          per sensor: ImportanceUpdate, AnnealedUpdate, TemperedSmcUpdate
+ │   └─ MoveKernel             MCMC moves of tempered SMC: RandomWalkMetropolis
  ├─ Resampler                  SystematicResampler, KldResampler
  ├─ ScanFilter
  └─ ScanMatcher                GicpScanMatcher, NdtScanMatcher
@@ -290,6 +294,62 @@ one at a time to the defaults (500 particles, default motion noise), 3 seeds:
   on the others, 4-6 % of the frames exceed 5 cm.
 
 The node ships with `scan_annealing_layers: 5` in `amcl_3d.param.yaml` (the library default is 0).
+
+### Tempered SMC
+
+Benchmark: [`kitti_benchmark.py`](amcl_3d_core/tools/kitti_benchmark.py) with
+[`benchmark.yaml`](amcl_3d_core/tools/config/benchmark.yaml), KITTI 07, 03, 04, 06, 10 and 01
+(highway) x 3 seeds, 500 particles, defaults otherwise. Means over the 18 runs of each scenario:
+
+| scenario | method | RMSE [m] | max [m] | NEES (3) | 95 % coverage | likelihood evaluations | CPU / CUDA [ms] |
+|---|---|---|---|---|---|---|---|
+| nominal | importance | 0.160 | 0.73 | diverges | 0.92 | 1 | 1.9 / 1.1 |
+| | annealing (5 layers) | 0.081 | 0.28 | 0.44 | 1.00 | 6 | 5.6 / 1.8 |
+| | **tempered SMC** | **0.071** | 0.34 | **2.79** | **0.95** | 8.4 | 7.1 / 2.3 |
+| | tempered SMC, `scan_max_effective_points: 10` | 0.108 | 0.36 | 0.50 | 1.00 | 5.0 | |
+| | tempered SMC, `max_stages: 5` | 0.089 | 0.38 | 59 | 0.75 | 6 | |
+| 3 m / 8.6 deg off | annealing | 0.081 | 0.30 | 0.45 | 1.00 | 6 | |
+| | tempered SMC | 0.073 | 0.40 | 3.64 | 0.95 | 8.4 | |
+| kidnapped (frame 151, 5 m) | importance | 30.7 (4 / 18 wrong mode) | | | | | |
+| | annealing | 0.146 | 2.10 | | | | |
+| | tempered SMC | 0.117 | 1.73 | | | | |
+
+Translation RMSE per sequence (nominal):
+
+| method | 07 | 03 | 04 | 06 | 10 | 01 |
+|---|---|---|---|---|---|---|
+| importance | 0.100 | 0.107 | 0.146 | 0.144 | 0.100 | 0.362 |
+| annealing | 0.062 | 0.078 | 0.075 | 0.077 | 0.055 | 0.139 |
+| tempered SMC | **0.050** | **0.067** | **0.070** | **0.065** | **0.052** | **0.123** |
+
+(timing: KITTI 07 alone, 4 threads; the benchmark ran 14 in parallel.)
+
+- **What annealing gets wrong**: it applies the likelihood once per layer on top of the update and
+  moves the particles by a Gaussian that keeps no distribution. On a Gaussian prior and
+  observation whose posterior is known, its variance is 20-25 % too small on every axis; tempered
+  SMC matches it within 15 % (`test_tempered_smc.cpp`). On KITTI both are *under*confident (NEES
+  0.4-0.5) because `scan_max_effective_points: 10` softens the likelihood that much, which a
+  single update needs to avoid collapsing (importance with 100 on KITTI 07: 16 % coverage, 0.144
+  instead of 0.092 m).
+- **Tempered SMC** (`TemperedSmcUpdate`) multiplies the weights by L^(tau db) per stage, the
+  increments db chosen by bisection to keep the conditional ESS (Zhou et al., 2016) at N/2, until
+  b = 1, so the likelihood is applied exactly once and needs no softening: with
+  `scan_max_effective_points: 100` the covariance is consistent and the error 12 % lower than
+  annealing, on every sequence. After each stage the particles are resampled if the ESS is below
+  half and moved by a random walk Metropolis step invariant for p(x | ancestor, odometry)
+  L(x)^(tau b) (resample-move). The predicted distribution is a mixture over the previous
+  particles; on the extended space (ancestor, pose) the motion prior of a particle is the density
+  of its own prediction, which `TransitionPrior` linearizes: the noise-free prediction of the
+  ancestor (anchor) and the covariance of the motion model noise propagated through every step
+  (exact to first order for one twist per scan, checked against Monte Carlo predictions).
+- **Proposals**: per cluster of particles (`ParticleClustering`), the weighted covariance before
+  resampling with clamped eigenvalues (1 rad counted as 5 m), scaled by 2.38 / sqrt(6) and adapted
+  to a 0.3 acceptance rate (measured 0.29-0.31).
+- **Budget**: `max_stages` caps the cost; capped at annealing's 6 evaluations, the forced last
+  stage degenerates (NEES 59) and annealing is more accurate. Gradient-based moves are the next
+  step to do better at the same cost.
+- **Delayed scans**: moves break the genealogy that reweighting a late measurement relies on, so
+  states updated with moves (annealing too) make late measurements replay instead.
 
 ### Tempering
 

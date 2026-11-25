@@ -60,6 +60,12 @@ add_library(${PROJECT_NAME} SHARED
   src/scan_filter.cpp
   src/scan_matcher/gicp_scan_matcher.cpp
   src/scan_matcher/ndt_scan_matcher.cpp
+  src/transition_prior.cpp
+  src/update/annealed_update.cpp
+  src/update/measurement_update.cpp
+  src/update/move_kernel.cpp
+  src/update/tempered_smc_update.cpp
+  src/update/update_factory.cpp
 )
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -105,6 +111,7 @@ set(TEST_SOURCES
   test/test_resampler.cpp
   test/test_scan_filter.cpp
   test/test_scan_matcher.cpp
+  test/test_tempered_smc.cpp
   test/test_twist_history.cpp
   test/test_asynchronous_localizer.cpp
   test/test_localizer.cpp

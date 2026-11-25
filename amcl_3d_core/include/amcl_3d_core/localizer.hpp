@@ -18,6 +18,7 @@
 #include "amcl_3d_core/sensor.hpp"
 #include "amcl_3d_core/twist_history.hpp"
 #include "amcl_3d_core/types.hpp"
+#include "amcl_3d_core/update/measurement_update.hpp"
 
 namespace amcl_3d
 {
@@ -51,9 +52,9 @@ struct LocalizerParams
   /// Sensor of updateWithPointCloud(): drives recovery. A scan counts as at most 10 independent
   /// points: on KITTI this cut the error by 25-40 % for every likelihood, motion model and
   /// particle count tried (5-10 was best; less converged more slowly), see README.
-  SensorParams point_cloud_sensor{"point_cloud", 10, true, 0.05};
+  SensorParams point_cloud_sensor{"point_cloud", 10, true, 0.05, DelayedFusion::kReplay, 0, {}};
   /// Sensor of updateWithPose().
-  SensorParams pose_sensor{"pose", 0, false, 0.05};
+  SensorParams pose_sensor{"pose", 0, false, 0.05, DelayedFusion::kReplay, 0, {}};
 
   struct Resampling
   {
@@ -221,6 +222,8 @@ public:
   double effectiveSampleSize() const { return current().filter.effectiveSampleSize(); }
   /// Likelihood of the newest measurement update, for diagnostics.
   const LikelihoodSummary & lastLikelihood() const { return current().last_likelihood; }
+  /// Diagnostics of the latest update (stages, likelihood evaluations, MCMC acceptance, ESS).
+  const UpdateStatistics & lastUpdateStatistics() const { return current().last_update; }
   /// Number of expansion resets since initialization, for diagnostics.
   size_t expansionResetCount() const { return current().expansion_reset_count; }
   /// Time the particles currently represent (the newest measurement).
@@ -252,6 +255,10 @@ private:
     uint64_t generation = 0;
     uint64_t parent_generation = 0;
     std::vector<size_t> parents;
+    // The update of this state moved particles beyond the motion model (annealing, MCMC):
+    // reweighting a delayed measurement through it would score the wrong poses, so it is replayed.
+    bool moved = false;
+    UpdateStatistics last_update;
   };
 
   struct Entry
@@ -275,19 +282,18 @@ private:
   void prune();
   void process(FilterState & state, const Entry & entry) const;
   void predict(FilterState & state, const Time & stamp) const;
-  void correct(FilterState & state, SensorId sensor, const LogLikelihood & log_likelihood) const;
+  void correct(FilterState & state, SensorId sensor, const MeasurementModel & model) const;
   bool needsResampling(const ParticleFilter & filter) const;
-  /// One annealing layer (SensorParams::annealing_layer_num) with `model`.
-  void anneal(
-    FilterState & state, const MeasurementModel & model, const SensorParams & sensor) const;
-  /// Resamples and composes the genealogy of the state with the new parents.
-  void resample(FilterState & state) const;
+  /// Resamples and composes the genealogy of the state with the new parents; returns the parents
+  /// of this resampling.
+  std::vector<size_t> resample(FilterState & state) const;
   std::vector<Eigen::Vector3d> samplePoints(
     const std::vector<Eigen::Vector3d> & points, const Time & stamp) const;
   void refineByScanMatching(const std::vector<Eigen::Vector3d> & points, const Time & stamp);
 
   LocalizerParams params_;
   std::vector<SensorParams> sensors_;
+  std::vector<std::unique_ptr<const MeasurementUpdate>> updates_;  // per sensor
   std::unique_ptr<MotionModel> motion_model_;
   std::unique_ptr<Resampler> resampler_;
   std::unique_ptr<ScanMatcher> scan_matcher_;

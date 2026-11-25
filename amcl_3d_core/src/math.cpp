@@ -94,4 +94,29 @@ Eigen::Quaterniond averageQuaternion(
   return average.normalized();
 }
 
+Pose retract(const Pose & pose, const Eigen::Matrix<double, 6, 1> & eps)
+{
+  Pose result;
+  result.position = pose.position + pose.orientation * eps.head<3>();
+  result.orientation = (pose.orientation * expMap(eps.tail<3>())).normalized();
+  return result;
+}
+
+Eigen::Matrix<double, 6, 1> localDifference(const Pose & pose, const Pose & reference)
+{
+  const Eigen::Quaterniond inverse = reference.orientation.conjugate();
+  Eigen::Matrix<double, 6, 1> eps;
+  eps.head<3>() = inverse * (pose.position - reference.position);
+  eps.tail<3>() = logMap(inverse * pose.orientation);
+  return eps;
+}
+
+Pose compose(const Pose & pose, const Pose & increment)
+{
+  Pose result;
+  result.position = pose.position + pose.orientation * increment.position;
+  result.orientation = (pose.orientation * increment.orientation).normalized();
+  return result;
+}
+
 }  // namespace amcl_3d

@@ -24,6 +24,7 @@ void ParticleFilter::initialize(const PoseWithCovariance & initial_pose, size_t 
   const GaussianPoseSampler sampler(initial_pose.covariance);
   initialize(
     [&](RandomGenerator & rng) { return sampler.sample(initial_pose.pose, rng); }, particle_num);
+  prior_.startGaussian(particle_num, initial_pose);
 }
 
 void ParticleFilter::initialize(const PoseSampler & sampler, size_t particle_num)
@@ -32,11 +33,13 @@ void ParticleFilter::initialize(const PoseSampler & sampler, size_t particle_num
   for (size_t i = 0; i < particle_num; ++i) {
     particles_.setPose(i, sampler(rng_));
   }
+  prior_.startFlat(particle_num);  // overridden by the Gaussian initialize()
 }
 
 void ParticleFilter::predict(const MotionModel & model, const Twist & twist, double dt)
 {
   model.predict(twist, dt, particles_, rng_);
+  prior_.predict(model, twist, dt);
 }
 
 LikelihoodSummary ParticleFilter::update(
@@ -85,6 +88,7 @@ std::vector<size_t> ParticleFilter::resample(const Resampler & resampler)
   }
   std::vector<size_t> parents = resampler.drawIndices(particles_, rng_);
   particles_ = particles_.select(parents);
+  prior_.select(parents);
   return parents;
 }
 
