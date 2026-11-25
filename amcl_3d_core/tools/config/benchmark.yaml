@@ -13,9 +13,8 @@ scenarios:
   kidnapped: {kidnap_frame: 151, kidnap_offset: 5.0, expansion_reset: 1}
 methods:
   importance: {}
-  annealing: {update: annealing}                       # 5 layers: 6 likelihood evaluations
   tsmc: {update: tsmc, effective: 100}                 # random walk, conditional ESS 0.5
-  tsmc_effective10: {update: tsmc}                     # the likelihood sharpness of the others
+  tsmc_effective10: {update: tsmc}                     # the likelihood sharpness of importance
   tsmc_budget6: {update: tsmc, effective: 100, max_stages: 5}  # at most 6 evaluations
   rwm_cess015: {update: tsmc, effective: 100, cess: 0.15}
   gn_cess03: {update: tsmc, effective: 100, kernel: gn, cess: 0.3}

@@ -8,19 +8,6 @@ namespace amcl_3d
 /// Handle of a sensor registered with Localizer::addSensor().
 using SensorId = size_t;
 
-/// How a measurement older than the newest one is fused (see Localizer).
-enum class DelayedFusion
-{
-  /// Rewind to the state before the measurement and replay the newer ones: the result is the same
-  /// as in time order, at the cost of one update per newer measurement.
-  kReplay,
-  /// Retroactive particle filter (Takeuchi, Ohno, Tadokoro, ROBOMECH 2010): weight the particles
-  /// at the measurement time and carry the weights to their descendants through the resampling
-  /// history. Costs one update whatever the delay; approximate, because the resampling and
-  /// recovery decisions taken meanwhile did not know the measurement.
-  kReweight,
-};
-
 /// How the localizer treats the measurements of one sensor. Sensors differ in how far their
 /// likelihoods can be trusted and compared, so these are per sensor rather than global.
 struct SensorParams
@@ -42,25 +29,9 @@ struct SensorParams
   /// this (only for sensors that drive recovery).
   double expansion_reset_threshold = 0.05;
 
-  /// Fusion of delayed measurements. Replay is exact; reweighting bounds the cost of sensors with
-  /// long delays (seconds) behind frequent updates, where replaying repeats many scan updates.
-  /// On KITTI, reweighted late scans were no more accurate than dropped ones (newer scans carry
-  /// the same information); it pays off for a sensor whose information the others lack.
-  DelayedFusion delayed_fusion = DelayedFusion::kReplay;
-
-  /// Annealed particle filter (Deutscher et al., 2000): an update first runs this many extra
-  /// layers, each weighting the particles by the likelihood raised to the largest exponent that
-  /// keeps half of them effective, resampling and moving them by a quarter of their own spread
-  /// (Gaussian). The cloud concentrates where the likelihood is high before the regular update,
-  /// instead of keeping only the few particles the motion model put there. Costs one likelihood
-  /// evaluation per layer. Like expansion resetting, the moves are not motion: a delayed
-  /// measurement fused by reweighting (DelayedFusion::kReweight) scores moved descendants. 0: off.
-  size_t annealing_layer_num = 0;
-
-  /// Fuses each measurement by adaptive tempered SMC with MCMC moves (TemperedSmcUpdate), the
-  /// consistent alternative to annealing: the likelihood enters in as many stages as its
-  /// sharpness needs (at most max_stages), and the moves keep the motion prior. Exclusive with
-  /// annealing_layer_num. Moves change the genealogy: delayed measurements are then replayed.
+  /// Fuses each measurement by adaptive tempered SMC with MCMC moves (TemperedSmcUpdate): the
+  /// likelihood enters in as many stages as its sharpness needs (at most max_stages), and the
+  /// moves keep the motion prior. Off: one importance update (ImportanceUpdate).
   struct TemperedSmc
   {
     bool enabled = false;

@@ -14,7 +14,6 @@
 #include "amcl_3d_core/point_cloud_likelihood/likelihood_field.hpp"
 #include "amcl_3d_core/resampler/systematic_resampler.hpp"
 #include "amcl_3d_core/transition_prior.hpp"
-#include "amcl_3d_core/update/annealed_update.hpp"
 #include "amcl_3d_core/update/tempered_smc_update.hpp"
 #include "test_utils.hpp"
 
@@ -125,23 +124,6 @@ TEST_F(GaussianPosteriorTest, GaussNewtonMovesTargetThePosterior)
       const double stddev = std::sqrt(posterior_covariance_(k, k));
       EXPECT_NEAR(mean(k), posterior_mean_(k), 0.1 * stddev) << "seed " << seed << ", axis " << k;
       EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.15)
-        << "seed " << seed << ", axis " << k;
-    }
-  }
-}
-
-TEST_F(GaussianPosteriorTest, AnnealingIsOverconfident)
-{
-  // the baseline applies the likelihood once per layer on top of the update (its moves widen
-  // the cloud again, but not enough): 20-25 % too little variance on every axis
-  const AnnealedUpdate update(5);
-  for (const uint64_t seed : {1, 2, 3}) {
-    ParticleFilter filter(seed);
-    filter.initialize(prior_, 4000);
-    update.apply(filter, PoseMeasurementModel(observation_), contextFor(filter));
-    const auto [mean, covariance] = posterior(filter);
-    for (int k : {0, 1, 5}) {
-      EXPECT_LT(covariance(k, k), 0.85 * posterior_covariance_(k, k))
         << "seed " << seed << ", axis " << k;
     }
   }

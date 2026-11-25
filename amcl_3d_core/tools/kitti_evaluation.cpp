@@ -4,7 +4,7 @@
 //
 // <dataset_dir> contains sequences/<seq>/{calib.txt,times.txt,velodyne/*.bin} and poses/<seq>.txt.
 //
-// Protocol (see README):
+// Protocol (see docs/evaluation.md):
 // - The map is built from the even frames registered with the ground truth poses.
 // - The odd frames are localized (5 Hz). Map and localized scans are different scans of the same
 //   drive, so this measures accuracy on real LiDAR data, not robustness to map changes.
@@ -15,19 +15,19 @@
 //
 // Options (defaults in Config), also read from config=<file> with one `key: value` per line
 // (command line options take precedence):
-// likelihood=likelihood_field|ndt|gicp sigma=<m>
+// likelihood=likelihood_field|ndt sigma=<m>
 // map=distance_field|kdtree device=cpu|cuda resolution=<m> (likelihood field)
 // voxel_resolution=<m> voxel_neighbors=0|1 (NDT, GICP)
 // effective=<n> (max effective scan points, 0: no tempering) max_delay=<s>
 // late_every=<n> late_by=<scans> (every n-th scan arrives after the next `late_by` scans)
-// late_fusion=replay|reweight estimate=cluster|mean
+// estimate=cluster|mean
 // init_offset=<m> init_yaw_offset=<rad>
 // threads=<n> motion=twist|vehicle odometry=full|wheel base_x=<m> base_pitch=<rad>
-// resampler=systematic|kld annealing=<layers>
-// particles=<n> sample=<n> scan_matching=0|1 scan_matcher=gicp|ndt max_correction=<m>
+// resampler=systematic|kld
+// particles=<n> sample=<n> scan_matching=0|1 max_correction=<m>
 // expansion_reset=0|1 seed=<n> frames=<n>
 // linear_noise_scale= linear_noise_bias= angular_noise_scale= angular_noise_bias= (twist motion model)
-// update=importance|annealing|tsmc max_stages=<n> mcmc_steps=<n> kernel=rwm|gn
+// update=importance|tsmc max_stages=<n> mcmc_steps=<n> kernel=rwm|gn
 // (scan update; tsmc: tempered SMC with that MCMC kernel)
 // kidnap_frame=<frame> kidnap_offset=<m> (re-initialize off the truth to measure recovery)
 // output=<trajectory.csv> summary=<file> (one JSON line of metrics, appended)
@@ -53,7 +53,6 @@
 #include "amcl_3d_core/point_cloud_likelihood/point_cloud_likelihood_factory.hpp"
 #include "amcl_3d_core/scan_filter.hpp"
 #include "amcl_3d_core/scan_matcher/gicp_scan_matcher.hpp"
-#include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 #include "amcl_3d_core/update/tempered_smc_update.hpp"
 #include "kitti_dataset.hpp"
 #include "statistics.hpp"
@@ -92,17 +91,15 @@ struct Config
   size_t particles = 500;
   size_t sample = 200;
   bool scan_matching = false;
-  size_t annealing = 0;  // point_cloud_sensor.annealing_layer_num
-  std::string update;    // importance | annealing (annealing layers, 5 if 0) | tsmc
+  std::string update = "importance";  // importance | tsmc
   size_t max_stages = TemperedSmcUpdate::Params{}.max_stages;
   size_t mcmc_steps = TemperedSmcUpdate::Params{}.mcmc_steps;
   std::string kernel = "rwm";  // rwm | gn
   double cess = 0.5;
   std::string summary;
-  size_t kidnap_frame = 0;       // 0: none
-  double kidnap_offset = 5.0;    // [m] along x
-  double converged_error = 0.5;  // [m]
-  std::string scan_matcher = "gicp";
+  size_t kidnap_frame = 0;                                                 // 0: none
+  double kidnap_offset = 5.0;                                              // [m] along x
+  double converged_error = 0.5;                                            // [m]
   double max_correction = LocalizerParams{}.scan_matching.max_correction;  // [m]
   TwistMotionModel::Params twist_noise;
   bool expansion_reset = false;
@@ -112,7 +109,6 @@ struct Config
   double max_delay = 1.0;  // [s]
   size_t late_every = 0;   // 0: every scan in time order
   size_t late_by = 2;
-  std::string late_fusion = "replay";
   std::string estimate = "cluster";
   std::string output;
   // odometry corruption
@@ -185,7 +181,6 @@ Config parseConfig(int argc, char ** argv)
   take("particles", c.particles);
   take("sample", c.sample);
   take("scan_matching", c.scan_matching);
-  take("annealing", c.annealing);
   take("update", c.update);
   take("max_stages", c.max_stages);
   take("mcmc_steps", c.mcmc_steps);
@@ -195,7 +190,6 @@ Config parseConfig(int argc, char ** argv)
   take("kidnap_frame", c.kidnap_frame);
   take("kidnap_offset", c.kidnap_offset);
   take("converged_error", c.converged_error);
-  take("scan_matcher", c.scan_matcher);
   take("max_correction", c.max_correction);
   take("linear_noise_scale", c.twist_noise.linear_noise_scale);
   take("linear_noise_bias", c.twist_noise.linear_noise_bias);
@@ -208,7 +202,6 @@ Config parseConfig(int argc, char ** argv)
   take("max_delay", c.max_delay);
   take("late_every", c.late_every);
   take("late_by", c.late_by);
-  take("late_fusion", c.late_fusion);
   take("estimate", c.estimate);
   take("init_offset", c.init_offset);
   take("init_yaw_offset", c.init_yaw_offset);
@@ -289,17 +282,10 @@ int main(int argc, char ** argv)
     }
     smc.kernel = kernels.at(config.kernel);
     smc.thread_num = config.threads;
-  } else if (config.update == "annealing" || (config.update.empty() && config.annealing > 0)) {
-    params.point_cloud_sensor.annealing_layer_num = config.annealing > 0 ? config.annealing : 5;
-  } else if (!config.update.empty() && config.update != "importance") {
+  } else if (config.update != "importance") {
     throw std::invalid_argument("unknown update: " + config.update);
   }
   params.max_measurement_delay = config.max_delay;
-  if (config.late_fusion == "reweight") {
-    params.point_cloud_sensor.delayed_fusion = DelayedFusion::kReweight;
-  } else if (config.late_fusion != "replay") {
-    throw std::invalid_argument("unknown late_fusion: " + config.late_fusion);
-  }
   if (config.estimate == "mean") {
     params.estimate.type = EstimateType::kMean;
   } else if (config.estimate != "cluster") {
@@ -323,21 +309,12 @@ int main(int argc, char ** argv)
   ndt.map.resolution = config.voxel_resolution;
   ndt.map.search_neighbors = config.voxel_neighbors;
   ndt.model.sigma = config.sigma;
-  auto & gicp = likelihood_params.gicp;
-  gicp.map = ndt.map;
-  gicp.model.sigma = config.sigma;
   const auto likelihood = createPointCloudLikelihood(map, likelihood_params);
   localizer.setPointCloudLikelihood(likelihood);
   if (config.scan_matching) {
-    if (config.scan_matcher == "gicp") {
-      GicpScanMatcher::Params matcher_params;
-      matcher_params.thread_num = config.threads;
-      localizer.setScanMatcher(std::make_unique<GicpScanMatcher>(map, matcher_params));
-    } else if (config.scan_matcher == "ndt") {
-      localizer.setScanMatcher(std::make_unique<NdtScanMatcher>(map, NdtScanMatcher::Params{}));
-    } else {
-      throw std::invalid_argument("unknown scan_matcher: " + config.scan_matcher);
-    }
+    GicpScanMatcher::Params matcher_params;
+    matcher_params.thread_num = config.threads;
+    localizer.setScanMatcher(std::make_unique<GicpScanMatcher>(map, matcher_params));
   }
   const double map_seconds =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - map_start).count();
@@ -579,22 +556,19 @@ int main(int argc, char ** argv)
     "map=%s res=%.2f device=%s threads=%zu motion=%s odometry=%s base_x=%.2f base_pitch=%.4f "
     "resampler=%s "
     "particles=%zu sample=%zu effective=%zu matching=%s reset=%d late_every=%zu late_by=%zu "
-    "late_fusion=%s estimate=%s seed=%lu\n",
+    "estimate=%s seed=%lu\n",
     config.map_type.c_str(), config.map_resolution, config.device.c_str(), config.threads,
     config.motion.c_str(), config.odometry.c_str(), config.base_x, config.base_pitch,
     config.resampler.c_str(), config.particles, config.sample, config.effective,
-    config.scan_matching ? config.scan_matcher.c_str() : "off", config.expansion_reset,
-    config.late_every, config.late_by, config.late_fusion.c_str(), config.estimate.c_str(),
-    static_cast<unsigned long>(config.seed));
+    config.scan_matching ? "gicp" : "off", config.expansion_reset, config.late_every,
+    config.late_by, config.estimate.c_str(), static_cast<unsigned long>(config.seed));
   std::printf(
     "  map: %zu points, built in %.1f s, %s\n", map->size(), map_seconds,
     likelihood->description().c_str());
   std::printf(
     "  frames: %zu evaluated, lost (>1 m): %zu, refined by scan matching: %zu, replayed updates: "
-    "%zu, "
-    "reweighted scans: %zu\n",
-    filter_errors.translation.size(), lost, refined_count, localizer.replayedCount(),
-    localizer.reweightedCount());
+    "%zu\n",
+    filter_errors.translation.size(), lost, refined_count, localizer.replayedCount());
   const Pose final_pose = localizer.estimate().pose;  // after every scan arrived
   std::printf(
     "  final estimate: %.9f %.9f %.9f (stamp %.3f)\n", final_pose.position.x(),
@@ -625,19 +599,17 @@ int main(int argc, char ** argv)
                             : "");
   if (!config.summary.empty()) {
     std::ofstream out(config.summary, std::ios::app);
-    out << "{\"sequence\": \"" << argv[2] << "\", \"update\": \""
-        << (config.update.empty() ? (config.annealing > 0 ? "annealing" : "importance")
-                                  : config.update)
+    out << "{\"sequence\": \"" << argv[2] << "\", \"update\": \"" << config.update
         << "\", \"seed\": " << config.seed << ", \"particles\": " << config.particles
         << ", \"init_offset\": " << config.init_offset
         << ", \"init_yaw_offset\": " << config.init_yaw_offset
-        << ", \"annealing\": " << config.annealing << ", \"max_stages\": " << config.max_stages
-        << ", \"mcmc_steps\": " << config.mcmc_steps << ", \"kernel\": \"" << config.kernel
-        << "\", \"cess\": " << config.cess << ", \"effective\": " << config.effective
-        << ", \"sample\": " << config.sample << ", \"sigma\": " << config.sigma
-        << ", \"scan_matching\": " << config.scan_matching << ", \"device\": \"" << config.device
-        << "\", \"rmse\": " << t.rmse << ", \"mean\": " << t.mean << ", \"p95\": " << t.p95
-        << ", \"max\": " << t.max << ", \"yaw_rmse_deg\": " << y.rmse * 180 / M_PI
+        << ", \"max_stages\": " << config.max_stages << ", \"mcmc_steps\": " << config.mcmc_steps
+        << ", \"kernel\": \"" << config.kernel << "\", \"cess\": " << config.cess
+        << ", \"effective\": " << config.effective << ", \"sample\": " << config.sample
+        << ", \"sigma\": " << config.sigma << ", \"scan_matching\": " << config.scan_matching
+        << ", \"device\": \"" << config.device << "\", \"rmse\": " << t.rmse
+        << ", \"mean\": " << t.mean << ", \"p95\": " << t.p95 << ", \"max\": " << t.max
+        << ", \"yaw_rmse_deg\": " << y.rmse * 180 / M_PI
         << ", \"rotation_rmse_deg\": " << rotation.rmse * 180 / M_PI << ", \"lost\": " << lost
         << ", \"frames\": " << filter_errors.translation.size() << ", \"nees\": " << mean(nees)
         << ", \"coverage95\": "

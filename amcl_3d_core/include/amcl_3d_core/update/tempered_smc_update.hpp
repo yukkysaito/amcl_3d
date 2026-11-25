@@ -17,7 +17,8 @@ namespace amcl_3d
 /// al., 2016) at `cess_ratio` N, so smooth likelihoods finish in one stage and sharp ones take
 /// more. After each stage the particles are resampled if the ESS is low and moved by
 /// `mcmc_steps` MCMC steps that keep pi_b invariant, with the motion prior evaluated by the
-/// TransitionPrior: unlike AnnealedUpdate, the result targets the posterior.
+/// TransitionPrior: the result targets the posterior (the annealed particle filter evaluated
+/// before it does not, docs/evaluation.md).
 ///
 /// `max_stages` bounds the cost: the last allowed stage takes the remaining increment whatever
 /// its ESS. Cost: 1 + stages * mcmc_steps likelihood evaluations. Without a transition prior

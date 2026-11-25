@@ -17,7 +17,8 @@ struct UpdateContext
   size_t max_effective_observation_num = 0;
   /// Resample when ESS / N drops below this ratio (LocalizerParams::resampling).
   double ess_ratio_threshold = 0.5;
-  /// Resamples the filter and records the genealogy; returns the parent of every new particle.
+  /// Resamples the filter (with the localizer's resampler); returns the parent of every new
+  /// particle.
   std::function<std::vector<size_t>()> resample;
   /// Clusters for cluster-wise proposals (LocalizerParams::estimate::clustering).
   ParticleClustering::Params clustering;
@@ -26,7 +27,7 @@ struct UpdateContext
 /// Diagnostics of one update.
 struct UpdateStatistics
 {
-  /// Tempering stages (annealing layers + 1 for the annealed update).
+  /// Tempering stages.
   size_t stages = 1;
   /// Likelihood evaluations of the whole particle set.
   size_t likelihood_evaluations = 1;
@@ -45,10 +46,6 @@ struct UpdateResult
 {
   /// Per-observation likelihood of the predicted particles (recovery, see ParticleFilter::update).
   LikelihoodSummary likelihood;
-  /// The particles were moved by something other than the motion model: the genealogy no longer
-  /// relates them to the predicted particles, so delayed measurements are replayed, not
-  /// reweighted.
-  bool moved = false;
   UpdateStatistics statistics;
 };
 

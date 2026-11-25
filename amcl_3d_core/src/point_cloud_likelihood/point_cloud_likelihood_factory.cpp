@@ -8,7 +8,6 @@ void PointCloudLikelihoodParams::setThreadNum(size_t thread_num)
 {
   likelihood_field.model.thread_num = thread_num;
   ndt.model.thread_num = thread_num;
-  gicp.model.thread_num = thread_num;
 }
 
 PointCloudLikelihoodParams::Type toPointCloudLikelihoodType(const std::string & name)
@@ -19,11 +18,8 @@ PointCloudLikelihoodParams::Type toPointCloudLikelihoodType(const std::string & 
   if (name == "ndt") {
     return PointCloudLikelihoodParams::Type::kNdt;
   }
-  if (name == "gicp") {
-    return PointCloudLikelihoodParams::Type::kGicp;
-  }
   throw std::invalid_argument(
-    "point cloud likelihood type must be 'likelihood_field', 'ndt' or 'gicp': " + name);
+    "point cloud likelihood type must be 'likelihood_field' or 'ndt': " + name);
 }
 
 void validate(const PointCloudLikelihoodParams & params)
@@ -36,10 +32,6 @@ void validate(const PointCloudLikelihoodParams & params)
     case PointCloudLikelihoodParams::Type::kNdt:
       GaussianVoxelMap::validate(params.ndt.map);
       NdtLikelihood::validate(params.ndt.model);
-      return;
-    case PointCloudLikelihoodParams::Type::kGicp:
-      GaussianVoxelMap::validate(params.gicp.map);
-      GicpLikelihood::validate(params.gicp.model);
       return;
   }
   throw std::invalid_argument("unknown point cloud likelihood type");
@@ -56,9 +48,6 @@ std::shared_ptr<const PointCloudLikelihood> createPointCloudLikelihood(
     case PointCloudLikelihoodParams::Type::kNdt:
       return std::make_shared<NdtLikelihood>(
         std::make_shared<GaussianVoxelMap>(*cloud, params.ndt.map), params.ndt.model);
-    case PointCloudLikelihoodParams::Type::kGicp:
-      return std::make_shared<GicpLikelihood>(
-        std::make_shared<GaussianVoxelMap>(*cloud, params.gicp.map), params.gicp.model);
     case PointCloudLikelihoodParams::Type::kLikelihoodField:
       break;
   }

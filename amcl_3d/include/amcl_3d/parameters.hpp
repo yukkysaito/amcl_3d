@@ -7,7 +7,6 @@
 #include "amcl_3d_core/point_cloud_likelihood/point_cloud_likelihood_factory.hpp"
 #include "amcl_3d_core/pose_sampler/ground_pose_sampler.hpp"
 #include "amcl_3d_core/scan_matcher/gicp_scan_matcher.hpp"
-#include "amcl_3d_core/scan_matcher/ndt_scan_matcher.hpp"
 
 namespace amcl_3d
 {
@@ -47,9 +46,7 @@ struct NodeParams
   struct ScanMatching
   {
     bool enabled;
-    std::string type;  // "gicp" or "ndt"
     GicpScanMatcher::Params gicp;
-    NdtScanMatcher::Params ndt;
   } scan_matching;
 };
 

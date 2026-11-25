@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-# C is required by the MPI dependency that VTK pulls in through PCL registration
-project(amcl_3d_core VERSION 0.1.0 LANGUAGES C CXX)
+project(amcl_3d_core VERSION 0.1.0 LANGUAGES CXX)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -12,7 +11,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common kdtree registration)
+find_package(PCL REQUIRED COMPONENTS common kdtree)
 find_package(OpenMP)
 
 # Optional CUDA backend of the likelihood (CudaDistanceFieldMap). Without it, a stub reports the
@@ -49,7 +48,6 @@ add_library(${PROJECT_NAME} SHARED
   src/particle_clustering.cpp
   src/particle_filter.cpp
   src/particle_set.cpp
-  src/point_cloud_likelihood/gicp_likelihood.cpp
   src/point_cloud_likelihood/likelihood_field.cpp
   src/point_cloud_likelihood/ndt_likelihood.cpp
   src/point_cloud_likelihood/point_cloud_likelihood.cpp
@@ -59,9 +57,7 @@ add_library(${PROJECT_NAME} SHARED
   src/resampler/systematic_resampler.cpp
   src/scan_filter.cpp
   src/scan_matcher/gicp_scan_matcher.cpp
-  src/scan_matcher/ndt_scan_matcher.cpp
   src/transition_prior.cpp
-  src/update/annealed_update.cpp
   src/update/measurement_update.cpp
   src/update/move_kernel.cpp
   src/update/tempered_smc_update.cpp

@@ -51,10 +51,10 @@ struct LocalizerParams
 
   /// Sensor of updateWithPointCloud(): drives recovery. A scan counts as at most 10 independent
   /// points: on KITTI this cut the error by 25-40 % for every likelihood, motion model and
-  /// particle count tried (5-10 was best; less converged more slowly), see README.
-  SensorParams point_cloud_sensor{"point_cloud", 10, true, 0.05, DelayedFusion::kReplay, 0, {}};
+  /// particle count tried (5-10 was best; less converged more slowly), see docs/evaluation.md.
+  SensorParams point_cloud_sensor{"point_cloud", 10, true, 0.05, {}};
   /// Sensor of updateWithPose().
-  SensorParams pose_sensor{"pose", 0, false, 0.05, DelayedFusion::kReplay, 0, {}};
+  SensorParams pose_sensor{"pose", 0, false, 0.05, {}};
 
   struct Resampling
   {
@@ -93,12 +93,6 @@ struct LocalizerParams
   {
     /// Matched poses farther than this from the particle filter estimate are rejected [m].
     double max_correction = 1.0;
-    /// Also correct the particles with the matched pose. The scan is then used twice, which makes
-    /// the filter overconfident, but keeps the particles close to the refined pose. The feedback
-    /// is a sensor of its own that does not drive recovery.
-    bool feedback = false;
-    /// Std of the matched pose used for the feedback: x, y, z [m], roll, pitch, yaw [rad].
-    Vector6d feedback_stddev = (Vector6d() << 0.1, 0.1, 0.1, 0.01, 0.01, 0.02).finished();
   } scan_matching;
 
   /// How estimate() summarizes the particles. The mean of a multimodal cloud lies between its
@@ -137,14 +131,7 @@ const char * toString(LocalizerStatus status);
 /// order, which the tests check bit for bit. Between measurements, buffered twists are integrated
 /// piecewise; before the first twist the vehicle is assumed to stand still.
 ///
-/// Replaying costs one update per newer measurement, i.e. delay x update rate. Sensors with
-/// DelayedFusion::kReweight are instead fused retroactively (Takeuchi et al., ROBOMECH 2010):
-/// every state records the particle each of its particles descends from, so the late measurement
-/// is evaluated once, on the particles at its time (interpolated on the path from each particle's
-/// parent to it), and its likelihood multiplies the weights of their descendants in every newer
-/// state. Weights commute, so this equals time order as long as the descendants are copies; it is
-/// approximate in that the resampling, resets and recovery statistics in between did not know
-/// the measurement. A replay that later covers such a measurement fuses it exactly again.
+/// Replaying costs one update per newer measurement, i.e. delay x update rate.
 ///
 /// Sensors: any measurement is fused by update() through a MeasurementModel of it, so a new
 /// sensor (camera landmarks, GNSS, ...) needs a model and an addSensor() call, no change here.
@@ -154,9 +141,8 @@ class Localizer
 {
 public:
   /// Built-in sensors.
-  static constexpr SensorId kPointCloudSensor = 0;    // LocalizerParams::point_cloud_sensor
-  static constexpr SensorId kPoseSensor = 1;          // LocalizerParams::pose_sensor
-  static constexpr SensorId kScanMatchingSensor = 2;  // scan matching feedback, no recovery
+  static constexpr SensorId kPointCloudSensor = 0;  // LocalizerParams::point_cloud_sensor
+  static constexpr SensorId kPoseSensor = 1;        // LocalizerParams::pose_sensor
 
   /// Throws std::invalid_argument for inconsistent parameters.
   explicit Localizer(const LocalizerParams & params);
@@ -228,12 +214,11 @@ public:
   size_t expansionResetCount() const { return current().expansion_reset_count; }
   /// Time the particles currently represent (the newest measurement).
   const Time & stamp() const { return current().stamp; }
-  /// Measurements kept for delayed ones, buffered twists, measurements processed again so far,
-  /// and delayed measurements fused by reweighting so far (diagnostics).
+  /// Measurements kept for delayed ones, buffered twists and measurements processed again so far
+  /// (diagnostics).
   size_t historySize() const { return history_.size(); }
   size_t bufferedTwistCount() const { return twists_.size(); }
   size_t replayedCount() const { return replayed_count_; }
-  size_t reweightedCount() const { return reweighted_count_; }
 
 private:
   struct RecoveryStatistics
@@ -250,14 +235,6 @@ private:
     std::vector<RecoveryStatistics> recovery;  // per sensor
     LikelihoodSummary last_likelihood;
     size_t expansion_reset_count = 0;
-    // Genealogy for reweighting: this particle set was computed from the set `parent_generation`
-    // and particle i descends from its particle parents[i] (empty: from particle i).
-    uint64_t generation = 0;
-    uint64_t parent_generation = 0;
-    std::vector<size_t> parents;
-    // The update of this state moved particles beyond the motion model (annealing, MCMC):
-    // reweighting a delayed measurement through it would score the wrong poses, so it is replayed.
-    bool moved = false;
     UpdateStatistics last_update;
   };
 
@@ -274,19 +251,11 @@ private:
   LocalizerStatus insert(Entry entry);
   /// Recomputes the states of history_[index] and after.
   void replayFrom(size_t index);
-  /// Fuses the delayed history_[index] retroactively; false (nothing changed) if the genealogy
-  /// of a newer state does not lead back to the state before it.
-  bool reweightFrom(size_t index);
-  /// process() plus the genealogy.
-  void advance(FilterState & state, const Entry & entry);
   void prune();
   void process(FilterState & state, const Entry & entry) const;
   void predict(FilterState & state, const Time & stamp) const;
   void correct(FilterState & state, SensorId sensor, const MeasurementModel & model) const;
   bool needsResampling(const ParticleFilter & filter) const;
-  /// Resamples and composes the genealogy of the state with the new parents; returns the parents
-  /// of this resampling.
-  std::vector<size_t> resample(FilterState & state) const;
   std::vector<Eigen::Vector3d> samplePoints(
     const std::vector<Eigen::Vector3d> & points, const Time & stamp) const;
   void refineByScanMatching(const std::vector<Eigen::Vector3d> & points, const Time & stamp);
@@ -309,8 +278,6 @@ private:
   std::deque<Entry> history_;
   TwistHistory twists_;
   size_t replayed_count_ = 0;
-  size_t reweighted_count_ = 0;
-  uint64_t last_generation_ = 0;
   std::optional<std::pair<Time, Pose>> refined_pose_;
 };
 

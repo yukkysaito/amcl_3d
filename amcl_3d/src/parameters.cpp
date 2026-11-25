@@ -68,18 +68,6 @@ EstimateType toEstimateType(const std::string & name)
     "parameter 'estimate.type' must be 'best_cluster' or 'mean': " + name);
 }
 
-DelayedFusion toDelayedFusion(const std::string & name)
-{
-  if (name == "replay") {
-    return DelayedFusion::kReplay;
-  }
-  if (name == "reweight") {
-    return DelayedFusion::kReweight;
-  }
-  throw std::invalid_argument(
-    "parameter 'scan_delayed_fusion' must be 'replay' or 'reweight': " + name);
-}
-
 NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
 {
   NodeParams p;
@@ -115,8 +103,8 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
   likelihood.setThreadNum(thread_num);
   likelihood.type = toPointCloudLikelihoodType(declare<std::string>(
     node, "point_cloud_likelihood.type", "likelihood_field",
-    "'likelihood_field' (distance to the nearest map point), 'ndt' (voxel normal distributions, "
-    "small map) or 'gicp' (ndt with the scan covariances)"));
+    "'likelihood_field' (distance to the nearest map point) or 'ndt' (voxel normal "
+    "distributions, small map)"));
 
   auto & field = likelihood.likelihood_field;
   const auto & field_defaults = likelihood_defaults.likelihood_field;
@@ -156,27 +144,6 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
     ndt_likelihood_defaults.map.search_neighbors,
     "Also match with the 6 face-neighboring voxels (wider basin, more accurate)");
 
-  auto & gicp = likelihood.gicp;
-  const auto & gicp_defaults = likelihood_defaults.gicp;
-  gicp.map.resolution = declare<double>(
-    node, "point_cloud_likelihood.gicp.resolution", gicp_defaults.map.resolution,
-    "Voxel size of the map distributions [m]");
-  gicp.map.min_point_num = declareCount(
-    node, "point_cloud_likelihood.gicp.min_point_num", gicp_defaults.map.min_point_num,
-    "Voxels with fewer map points are dropped");
-  gicp.map.search_neighbors = declare<bool>(
-    node, "point_cloud_likelihood.gicp.search_neighbors", gicp_defaults.map.search_neighbors,
-    "Also match with the 6 face-neighboring voxels (wider basin, more accurate)");
-  gicp.model.sigma = declare<double>(
-    node, "point_cloud_likelihood.gicp.sigma", gicp_defaults.model.sigma,
-    "Measurement noise added to every pair of distributions [m]");
-  gicp.model.max_mahalanobis_distance = declare<double>(
-    node, "point_cloud_likelihood.gicp.max_mahalanobis_distance",
-    gicp_defaults.model.max_mahalanobis_distance,
-    "Per-point clipping of the Mahalanobis distance [std dev]");
-  gicp.model.neighbor_num = declareCount(
-    node, "point_cloud_likelihood.gicp.neighbor_num", gicp_defaults.model.neighbor_num,
-    "Scan points per scan covariance");
   validate(likelihood);  // fail at startup, not when the map arrives
 
   p.global_localization.particle_num = declareCount(
@@ -186,16 +153,9 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
   p.global_localization.sampler.base_height = declare<double>(
     node, "global_localization.base_height", 0.0, "Height of the base frame above the ground [m]");
 
-  const NdtScanMatcher::Params ndt_defaults;
   auto & matching = p.scan_matching;
-  matching.enabled =
-    declare<bool>(node, "scan_matching.enabled", false, "Refine the estimate by scan matching");
-  matching.type =
-    declare<std::string>(node, "scan_matching.type", "gicp", "Scan matcher: 'gicp' or 'ndt'");
-  if (matching.type != "gicp" && matching.type != "ndt") {
-    throw std::invalid_argument(
-      "parameter 'scan_matching.type' must be 'gicp' or 'ndt': " + matching.type);
-  }
+  matching.enabled = declare<bool>(
+    node, "scan_matching.enabled", false, "Refine the estimate by scan matching (GICP)");
   const GicpScanMatcher::Params gicp_matcher_defaults;
   matching.gicp.max_correspondence_distance = declare<double>(
     node, "scan_matching.gicp.max_correspondence_distance",
@@ -204,18 +164,6 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
     node, "scan_matching.gicp.robust_kernel_width", gicp_matcher_defaults.robust_kernel_width,
     "Cauchy kernel width on the Mahalanobis distance of a pair");
   matching.gicp.thread_num = thread_num;
-  matching.ndt.resolution = declare<double>(
-    node, "scan_matching.ndt.resolution", ndt_defaults.resolution, "NDT voxel size [m]");
-  matching.ndt.step_size = declare<double>(
-    node, "scan_matching.ndt.step_size", ndt_defaults.step_size, "Maximum line search step [m]");
-  matching.ndt.transformation_epsilon = declare<double>(
-    node, "scan_matching.ndt.transformation_epsilon", ndt_defaults.transformation_epsilon,
-    "Convergence threshold of the transformation change");
-  matching.ndt.max_iterations = static_cast<int>(declareCount(
-    node, "scan_matching.ndt.max_iterations", ndt_defaults.max_iterations, "Maximum iterations"));
-  matching.ndt.max_fitness = declare<double>(
-    node, "scan_matching.ndt.max_fitness", ndt_defaults.max_fitness,
-    "Results with a larger fitness score (mean squared distance) are rejected [m^2]");
   return p;
 }
 
@@ -235,13 +183,10 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   p.point_cloud_sensor.max_effective_observation_num = declareCount(
     node, "scan_max_effective_points", defaults.point_cloud_sensor.max_effective_observation_num,
     "A scan counts as at most this many independent points (tempering; 0: no limit)");
-  p.point_cloud_sensor.annealing_layer_num = declareCount(
-    node, "scan_annealing_layers", defaults.point_cloud_sensor.annealing_layer_num,
-    "Annealing layers run before each scan update (annealed particle filter; 0: off)");
   auto & smc = p.point_cloud_sensor.tempered_smc;
   smc.enabled = declare<bool>(
     node, "scan_tempered_smc.enabled", smc.enabled,
-    "Fuse scans by adaptive tempered SMC with MCMC moves (exclusive with scan_annealing_layers)");
+    "Fuse scans by adaptive tempered SMC with MCMC moves (off: one importance update)");
   smc.max_stages = declareCount(
     node, "scan_tempered_smc.max_stages", smc.max_stages,
     "Most tempering stages per scan; the last one takes the rest of the likelihood");
@@ -266,10 +211,6 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
     throw std::invalid_argument("parameter 'scan_tempered_smc.cess_ratio' must be in (0, 1)");
   }
   smc.thread_num = thread_num;
-  if (smc.enabled && p.point_cloud_sensor.annealing_layer_num > 0) {
-    throw std::invalid_argument(
-      "parameters 'scan_tempered_smc.enabled' and 'scan_annealing_layers' are exclusive");
-  }
   if (smc.enabled && smc.max_stages == 0) {
     throw std::invalid_argument("parameter 'scan_tempered_smc.max_stages' must be positive");
   }
@@ -280,10 +221,6 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   if (!(p.max_measurement_delay >= 0.0)) {
     throw std::invalid_argument("parameter 'max_measurement_delay' must not be negative");
   }
-  p.point_cloud_sensor.delayed_fusion = toDelayedFusion(declare<std::string>(
-    node, "scan_delayed_fusion", "replay",
-    "Fusion of a late scan: 'replay' the newer scans (exact) or 'reweight' the descendants of the "
-    "particles at its time (one update whatever the delay, approximate)"));
   const auto seed =
     declare<int64_t>(node, "random_seed", -1, "Seed of the random generator (-1: random)");
   p.random_seed = seed < 0 ? std::random_device()() : static_cast<uint64_t>(seed);
@@ -399,12 +336,6 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   matching.max_correction = declare<double>(
     node, "scan_matching.max_correction", defaults.scan_matching.max_correction,
     "Matched poses farther than this from the estimate are rejected [m]");
-  matching.feedback = declare<bool>(
-    node, "scan_matching.feedback", defaults.scan_matching.feedback,
-    "Also correct the particles with the matched pose");
-  matching.feedback_stddev = declareVector6(
-    node, "scan_matching.feedback_stddev", defaults.scan_matching.feedback_stddev,
-    "Std of the matched pose for the feedback: x, y, z [m], roll, pitch, yaw [rad]");
 
   auto & augmented = p.augmented_mcl;
   augmented.enabled = declare<bool>(
