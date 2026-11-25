@@ -28,17 +28,21 @@ The core library can also be built without ROS (only its tests are built then):
 cmake -S amcl_3d_core -B build && cmake --build build && ./build/test_amcl_3d_core
 ```
 
-### CUDA (optional)
+### CUDA
 
-With the CUDA toolkit (tested with 12.8), the likelihood of the distance field can run on the GPU:
+The defaults assume a GPU: with the CUDA toolkit (tested with 12.8), the likelihood of the distance
+field runs on it. The CUDA backend is built whenever CMake finds `nvcc` (on `PATH`, `CUDACXX` or
+`/usr/local/cuda`); force it with `-DAMCL3D_USE_CUDA=ON` or `OFF`:
 
 ```bash
-colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DAMCL3D_USE_CUDA=ON
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
-then set `point_cloud_likelihood.likelihood_field.map.device: cuda`. `CMAKE_CUDA_ARCHITECTURES` defaults to the GPU of the build machine
-(`native`); set it explicitly (e.g. `"86;89"`) when building elsewhere. Without CUDA, the node
-reports the `cuda` device as an error at startup.
+`point_cloud_likelihood.likelihood_field.map.device: auto` (the default) then uses the GPU when one
+is present and the CPU otherwise; `cuda` makes a missing GPU an error at startup.
+`CMAKE_CUDA_ARCHITECTURES` defaults to the GPU of the build machine (`native`, CMake 3.24 or later;
+older CMake builds without CUDA unless it is set); set it explicitly (e.g. `"86;89"`) when building
+elsewhere.
 
 ## Run
 
@@ -191,27 +195,28 @@ Source layout of `amcl_3d_core` (headers under `include/amcl_3d_core/`, sources 
 
 ## Evaluation
 
-KITTI odometry sequences 07, 03, 04, 06, 10 and 01 (highway), 3 seeds each, 500 particles, the
-node defaults (tempered SMC with random walk moves): the map from even frames registered with the
-ground truth, odd frames localized with odometry derived from the ground truth with a 2 % scale
-error, a yaw rate bias and noise. Means over the 18 runs:
+KITTI odometry sequences 07, 03, 04, 06, 10 and 01 (highway), 3 seeds each, the node defaults
+(tempered SMC with random walk moves, 500 particles, 800 scan points, the likelihood on the GPU):
+the map from even frames registered with the ground truth, odd frames localized with odometry
+derived from the ground truth with a 2 % scale error, a yaw rate bias and noise. Means over the
+18 runs:
 
-| scenario | translation RMSE [m] | NEES (x, y, yaw; 3 if consistent) | likelihood evaluations / scan | KITTI 07 update CPU / CUDA [ms] |
+| scenario | translation RMSE [m] | NEES (x, y, yaw; 3 if consistent) | likelihood evaluations / scan | KITTI 07 update CUDA / CPU [ms] |
 |---|---|---|---|---|
-| initial guess 0.5 m / 1.7 deg off | 0.075 | 3.38 | 5.3 | 4.8 / 1.8 |
-| initial guess 3 m / 8.6 deg off | 0.075 | | | |
-| kidnapped (5 m, expansion resetting) | 0.104 | | | |
+| initial guess 0.5 m / 1.7 deg off | 0.061 | 2.24 | 5.3 | 1.8 / 14.7 |
+| initial guess 3 m / 8.6 deg off | 0.060 | | | |
+| kidnapped (5 m, expansion resetting) | 0.079 | | | |
 
 Options measured on the same benchmark:
 
-| configuration | nominal / 3 m off / kidnapped [m] | KITTI 07 CPU / CUDA [ms] |
+| configuration | nominal / 3 m off / kidnapped [m] | KITTI 07 CUDA / CPU [ms] |
 |---|---|---|
-| default | 0.075 / 0.075 / 0.104 | 4.95 / 1.85 |
-| `scan_sample_num: 800`, `coarse_to_fine: true` | 0.058 / 0.058 / 0.103 | 9.7 / 2.04 |
+| default | 0.061 / 0.060 / 0.079 | 1.8 / 14.7 |
+| `scan_sample_num: 200` (the former default; CPU-only machines) | 0.075 / 0.075 / 0.104 | 1.85 / 4.95 |
+| 800 points, `coarse_to_fine: true` (CPU-only machines) | 0.058 / 0.058 / 0.103 | 2.04 / 9.7 |
+| default + GICP refinement of the published pose ([`kitti_accurate.yaml`](amcl_3d_core/tools/config/kitti_accurate.yaml)) | 0.045 / 0.044 / 0.066 | 3.6 / |
 
-With 800 points, coarse to fine and GICP refinement of the published pose
-([`kitti_accurate.yaml`](amcl_3d_core/tools/config/kitti_accurate.yaml)), KITTI 07 reaches
-0.037-0.039 m.
+With GICP refinement KITTI 07 reaches 0.034 m.
 [docs/evaluation.md](docs/evaluation.md) holds every measurement behind the defaults: map
 representations, particle counts, tempering, tempered SMC against the annealed particle filter,
 move kernels, delayed measurements, scan likelihoods, motion models, and the options removed

@@ -91,15 +91,15 @@ one at a time to the defaults (500 particles, default motion noise), 3 seeds:
 - **Timing**: on the GPU, the 6 likelihood evaluations of an annealed update take 0.03 ms each
   (1.75 ms each on 4 CPU threads); the rest of the 4.3 ms is GICP (2.4 ms), scan filtering (~1 ms)
   and the filter itself (0.6 ms).
-- **GICP refinement** (`GicpScanMatcher`): plane-to-plane GICP against the map points with their
-  neighborhood covariances, with a Cauchy kernel. Registered from the ground truth offset by
+- **GICP refinement** (`GicpScanMatcher`): GICP against the map points with their
+  neighborhood covariances, with a Cauchy kernel (at the time plane-to-plane, with scan
+  covariances too; they were dropped later, see [CUDA-first defaults](#cuda-first-defaults)). Registered from the ground truth offset by
   0.3 m and 1.7 deg, it lands within 2 cm (median); a GICP on 1 m voxel distributions stayed 5-10 cm
   off and PCL's NDT ~0.25 m,
   and NDT refinement instead of GICP (`NdtScanMatcher`, removed) gives 0.041-0.042 m. Refinements farther than
   `max_correction` from the particle estimate are rejected: without annealing the estimate is too
   far off for most of them (last row). It registers 1000 points of the scan
-  (`GicpScanMatcher::Params::max_point_num`; their covariances still come from the whole scan),
-  linearized about the sensor rather than the map origin, in ~8 iterations: 2.4 ms. All ~7500
+  (`GicpScanMatcher::Params::max_point_num`), linearized about the sensor rather than the map origin, in ~8 iterations: 2.4 ms. All ~7500
   points of the filtered scan gave 0.035 m in 14 ms.
 - **The reference itself**: registering every localized scan to the map from its ground truth pose
   (PCL GICP) moves it by 0.023 m RMSE (p95 0.039 m), and by 0.1-0.2 m around t = 110 s, where the
@@ -342,12 +342,12 @@ Per sequence (nominal), from the default to 800 points with vertical Gauss-Newto
   - got it back with 800 points and coarse to fine: 0.037-0.039 m, the level of the former
     annealed configuration;
 
-The node defaults stay generic 6-DoF (random walk, 200 points). Configuration choices:
+The node defaults stay generic 6-DoF (random walk); they later moved to 800 points on the GPU
+([CUDA-first defaults](#cuda-first-defaults)). Configuration choices:
 
 | situation | settings |
 |---|---|
-| with CUDA | `scan_sample_num: 800` |
-| CPU with many points | `coarse_to_fine: true` |
+| CPU-only machines | `scan_sample_num: 200`, or 800 with `coarse_to_fine: true` |
 
 ### Not done
 
@@ -358,7 +358,51 @@ The node defaults stay generic 6-DoF (random walk, 200 points). Configuration ch
   - The kernel interactions cost O(N^2) per step.
   - Their main gain, millions of particles on the GPU, addresses the particle count, which the
     Gauss-Newton moves already reduce while staying exact.
-- **A multimodal benchmark** (repeated structures) and real vehicle data are still to come.
+- **A multimodal benchmark** (repeated structures) is still to come.
+
+## CUDA-first defaults
+
+The node targets machines with a GPU. Benchmark as above, with the likelihood on the GPU
+(`device=cuda`); timing on an idle RTX 5080.
+
+**Device.** `point_cloud_likelihood.likelihood_field.map.device: auto` (the node default) puts
+the distance field on the GPU when amcl_3d_core has the CUDA backend and a device is present, and
+falls back to the CPU otherwise (the k-d tree map always runs on the CPU). The CUDA backend is
+built whenever CMake finds `nvcc`; `-DAMCL3D_USE_CUDA=OFF` or `ON` still forces it. The library
+default stays `cpu`.
+
+**Scan points.** On the GPU a likelihood evaluation takes ~0.03 ms whatever the point count, so
+`scan_sample_num` goes from 200 to 800:
+
+| scan points | nominal [m] | 3 m off [m] | kidnapped [m] | NEES | KITTI 07 CUDA / CPU [ms] |
+|---|---|---|---|---|---|
+| 200 (former default) | 0.075 | 0.075 | 0.104 | 3.4 | 1.85 / 4.95 |
+| **800** | **0.061** | **0.060** | **0.079** | 2.2 | 1.8 / 14.7 |
+
+**Effective points.** `scan_max_effective_points` sets how sharp the scan likelihood is. With
+800 points, 100 stays the best and consistent:
+
+| `scan_max_effective_points` | nominal [m] | 3 m off [m] | kidnapped [m] | NEES |
+|---|---|---|---|---|
+| **100** | **0.061** | **0.060** | **0.079** | 2.2 |
+| 50 | 0.075 | 0.075 | 0.117 | 2.6 |
+| 25 | 0.095 | 0.096 | 0.196 | 1.1 |
+
+**GICP without scan covariances.** GICP's plane-to-plane form gives every scan point the
+covariance of its 10 nearest scan neighbors. Those need a dense scan: from sparse scans (an
+already downsampled cloud, as many drivers publish) the neighbors span meters and the planes are
+noise. Registering against the map's planes alone, with a small isotropic scan point variance,
+is more accurate on KITTI's dense scans too (`kitti_accurate.yaml`, 2 seeds per sequence):
+
+| scan covariance | 07 | 03 | 04 | 06 | 10 | 01 | mean [m] |
+|---|---|---|---|---|---|---|---|
+| plane of the scan neighbors (before) | 0.042 | 0.059 | 0.051 | 0.052 | 0.036 | 0.083 | 0.054 |
+| **none (map planes only)** | **0.034** | **0.046** | **0.038** | **0.045** | **0.031** | **0.070** | **0.044** |
+
+It also skips building a k-d tree of each scan. On the synthetic outlier test (a parked truck
+0.35 m in front of a wall), the robust kernel keeps the error at 1.1 cm against 5.8 cm without
+it. With 3 seeds and 3 scenarios, the cm-level preset (node defaults + GICP refinement) reaches
+0.045 / 0.044 / 0.066 m (nominal / 3 m off / kidnapped), KITTI 07 0.034 m, in 3.6 ms per update.
 
 ## Tempering
 

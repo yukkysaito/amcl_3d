@@ -14,9 +14,22 @@ find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common kdtree)
 find_package(OpenMP)
 
-# Optional CUDA backend of the likelihood (CudaDistanceFieldMap). Without it, a stub reports the
-# missing backend at run time, so users need no #ifdef.
-option(AMCL3D_USE_CUDA "Build the CUDA backend" OFF)
+# CUDA backend of the likelihood (CudaDistanceFieldMap), built by default when a CUDA compiler is
+# found (on PATH, CUDACXX or the default /usr/local/cuda). Without it, a stub reports the missing
+# backend at run time, so users need no #ifdef, and `device: auto` falls back to the CPU.
+include(CheckLanguage)
+if(NOT CMAKE_CUDA_COMPILER AND NOT DEFINED ENV{CUDACXX} AND EXISTS /usr/local/cuda/bin/nvcc)
+  set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
+endif()
+check_language(CUDA)
+# before CMake 3.24 the architectures cannot default to the build machine's GPU
+if(CMAKE_CUDA_COMPILER AND (DEFINED CMAKE_CUDA_ARCHITECTURES OR NOT CMAKE_VERSION VERSION_LESS 3.24))
+  set(AMCL3D_CUDA_DEFAULT ON)
+else()
+  set(AMCL3D_CUDA_DEFAULT OFF)
+endif()
+option(AMCL3D_USE_CUDA "Build the CUDA backend" ${AMCL3D_CUDA_DEFAULT})
+message(STATUS "amcl_3d_core: CUDA backend ${AMCL3D_USE_CUDA}")
 if(AMCL3D_USE_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     if(CMAKE_VERSION VERSION_LESS 3.24)

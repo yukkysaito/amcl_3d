@@ -28,7 +28,10 @@ MapParams::Device toMapDevice(const std::string & name)
   if (name == "cuda") {
     return MapParams::Device::kCuda;
   }
-  throw std::invalid_argument("map device must be 'cpu' or 'cuda': " + name);
+  if (name == "auto") {
+    return MapParams::Device::kAuto;
+  }
+  throw std::invalid_argument("map device must be 'cpu', 'cuda' or 'auto': " + name);
 }
 
 void validate(const MapParams & params)
@@ -49,8 +52,15 @@ void validate(const MapParams & params)
 }
 
 std::shared_ptr<const PointCloudMap> createPointCloudMap(
-  const PointCloud::ConstPtr & cloud, const MapParams & params, double max_distance)
+  const PointCloud::ConstPtr & cloud, const MapParams & requested, double max_distance)
 {
+  MapParams params = requested;
+  if (params.device == MapParams::Device::kAuto) {
+    params.device =
+      params.type == MapParams::Type::kDistanceField && CudaDistanceFieldMap::available()
+        ? MapParams::Device::kCuda
+        : MapParams::Device::kCpu;
+  }
   validate(params);
   if (!cloud || cloud->empty()) {
     throw std::invalid_argument("the map point cloud is empty");

@@ -21,6 +21,7 @@ struct MapParams
   {
     kCpu,
     kCuda,  // distance field only; needs a CUDA build and device
+    kAuto,  // kCuda for the distance field when CUDA is available, kCpu otherwise
   };
 
   Type type = Type::kDistanceField;
@@ -28,7 +29,7 @@ struct MapParams
   double resolution = 0.2;  // [m] distance field voxel size
 };
 
-/// Parse the configuration names ("distance_field", "kdtree"; "cpu", "cuda").
+/// Parse the configuration names ("distance_field", "kdtree"; "cpu", "cuda", "auto").
 /// Throw std::invalid_argument for unknown names.
 MapParams::Type toMapType(const std::string & name);
 MapParams::Device toMapDevice(const std::string & name);

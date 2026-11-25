@@ -164,6 +164,7 @@ TEST(MapFactory, ParsesNames)
   EXPECT_EQ(toMapType("kdtree"), MapParams::Type::kKdTree);
   EXPECT_EQ(toMapDevice("cpu"), MapParams::Device::kCpu);
   EXPECT_EQ(toMapDevice("cuda"), MapParams::Device::kCuda);
+  EXPECT_EQ(toMapDevice("auto"), MapParams::Device::kAuto);
   EXPECT_THROW(toMapType("octree"), std::invalid_argument);
   EXPECT_THROW(toMapDevice("gpu"), std::invalid_argument);
 }
@@ -183,6 +184,21 @@ TEST(MapFactory, BuildsTheRequestedMap)
     dynamic_cast<const KdTreeMap *>(createPointCloudMap(cloud, params, 0.8).get()), nullptr);
   EXPECT_THROW(
     createPointCloudMap(PointCloud::Ptr(new PointCloud), params, 0.8), std::invalid_argument);
+}
+
+TEST(MapFactory, AutoDeviceUsesCudaWhenAvailable)
+{
+  const PointCloud::Ptr cloud = test::makeRoomMap();
+  MapParams params;
+  params.device = MapParams::Device::kAuto;
+  const auto field = createPointCloudMap(cloud, params, 0.8);
+  EXPECT_EQ(
+    dynamic_cast<const CudaDistanceFieldMap *>(field.get()) != nullptr,
+    CudaDistanceFieldMap::available());
+  // the k-d tree has no CUDA backend: auto falls back to the CPU instead of rejecting it
+  params.type = MapParams::Type::kKdTree;
+  EXPECT_NE(
+    dynamic_cast<const KdTreeMap *>(createPointCloudMap(cloud, params, 0.8).get()), nullptr);
 }
 
 TEST(MapFactory, RejectsInconsistentParameters)

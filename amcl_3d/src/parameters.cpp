@@ -118,8 +118,8 @@ NodeParams declareNodeParams(rclcpp::Node & node, size_t thread_num)
     node, "point_cloud_likelihood.likelihood_field.map.type", "distance_field",
     "'distance_field' (fast) or 'kdtree' (exact, slow)"));
   field.map.device = toMapDevice(declare<std::string>(
-    node, "point_cloud_likelihood.likelihood_field.map.device", "cpu",
-    "'cpu' or 'cuda' (distance_field only, needs a CUDA build)"));
+    node, "point_cloud_likelihood.likelihood_field.map.device", "auto",
+    "'auto' (cuda when available), 'cpu' or 'cuda' (distance_field only, needs a CUDA build)"));
   field.map.resolution = declare<double>(
     node, "point_cloud_likelihood.likelihood_field.map.resolution", field_defaults.map.resolution,
     "Voxel size of the distance field [m]");

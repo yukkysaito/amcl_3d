@@ -25,7 +25,9 @@
 
     # particle filter
     initial_particle_num: 500
-    scan_sample_num: 200  # scan points per update (0: all)
+    # scan points per update (0: all). On the GPU 800 cost no more than 200 and are 20 % more
+    # accurate (KITTI); on a CPU-only machine 200 take a third of the time
+    scan_sample_num: 800
     # A scan counts as at most this many independent points: its points are strongly correlated,
     # and treating them as independent makes the filter overconfident. With tempered SMC the
     # likelihood enters in stages and can be sharper: 100 gives a consistent covariance (NEES ~3);
@@ -45,8 +47,8 @@
       #   likelihood_field); 0.072 m but slow recovery from a wrong pose (docs/evaluation.md).
       kernel: random_walk
       cess_ratio: 0.15  # conditional ESS / N kept by a stage; lower: fewer, larger stages
-      # temper with a quarter of the scan points, then bridge to all of them: on the CPU with
-      # scan_sample_num 800 a third faster at the same accuracy; no gain with 200 points or CUDA
+      # temper with a quarter of the scan points, then bridge to all of them: on a CPU-only
+      # machine a third faster at the same accuracy with 800 points; no gain with CUDA
       coarse_to_fine: false
     # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
     # at their own time by replaying the newer scans (the result of time order) [s]; costs one
@@ -101,9 +103,10 @@
           # kdtree: exact nearest neighbor search, slow (~24 ms per update with the defaults)
           type: distance_field
           resolution: 0.2  # [m] distance_field voxel size
-          # cpu, or cuda: likelihood of the distance_field on the GPU (build amcl_3d_core with
-          #   --cmake-args -DAMCL3D_USE_CUDA=ON); worth it with many particles
-          device: cpu
+          # auto: cuda when amcl_3d_core was built with CUDA (by default when nvcc is found) and a
+          #   GPU is present, else cpu; cuda: likelihood of the distance_field on the GPU (an
+          #   error without it); cpu
+          device: auto
       ndt:
         resolution: 1.0                # [m] voxel size
         min_point_num: 6               # voxels with fewer map points are dropped
