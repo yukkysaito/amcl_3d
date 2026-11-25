@@ -109,12 +109,12 @@ one at a time to the defaults (500 particles, default motion noise), 3 seeds:
 The node used `scan_annealing_layers: 5` until tempered SMC replaced it (next sections); annealing
 was then removed.
 
-`kitti_accurate.yaml` now holds the tempered SMC defaults plus GICP refinement: 0.043 m RMSE
-(p95 0.083 m, seed 1). With tempered SMC, `sigma` 0.1 m and 500 points give the same 0.043 m
-(p95 0.070 m) but a much sharper likelihood that takes more stages, so they were dropped from the
-preset. The annealed configuration above stays 3-5 mm better at this one metric; its covariance
-is not consistent (see below). (Timing of these runs is not reported: they ran on a loaded
-machine.)
+With annealing removed, the tempered SMC defaults plus GICP refinement gave 0.042-0.047 m (3
+seeds); `sigma` 0.1 m and 500 points gave the same 0.043 m with a much sharper likelihood that
+takes more stages. `kitti_accurate.yaml` now holds the tempered SMC defaults with 800 scan points
+tempered from a quarter of them (coarse to fine) plus GICP refinement: 0.037-0.039 m (mean
+0.030 m, p95 0.066-0.069 m), the level of the annealed configuration above, with a consistent
+covariance ([coarse to fine](#coarse-to-fine)).
 
 ## Tempered SMC
 
@@ -204,6 +204,164 @@ proposals are kept, so a step costs one evaluation like the random walk. Same be
   Gauss-Newton (more accurate), and isotropic MALA does not mix in 6 DoF (position and rotation
   scales differ; acceptance 0.14): both were removed.
 - The kernels keep the analytic posterior of the Gaussian test (`GaussNewtonMovesTargetThePosterior`).
+
+## Particle count, vertical Rao-Blackwellization and coarse to fine
+
+The question: can the filter need fewer particles, or fewer likelihood evaluations, at the same
+accuracy, convergence and robustness? Benchmark as above (KITTI 07, 03, 04, 06, 10, 01 x 3 seeds
+x 3 scenarios, tempered SMC, `scan_max_effective_points: 100`, conditional ESS 0.15). Timing:
+KITTI 07, seed 1, on an idle i9-14900K with 4 threads and an RTX 5080, mean per update.
+
+### Particle count
+
+| particles | random walk: nominal / 3 m off / kidnapped [m] | NEES | annealing (removed): nominal / kidnapped [m] |
+|---|---|---|---|
+| 100 | 0.131 / 0.131 / 0.353 | 323 | 0.108 / 0.243 |
+| 200 | 0.093 / 0.090 / 0.265 | 11 | 0.090 / 0.188 |
+| **500** | **0.075 / 0.075 / 0.104** | 3.4 | 0.081 / 0.146 |
+| 1000 | 0.074 / 0.072 / 0.113 | 3.7 | 0.078 / 0.104 |
+| 2000 | 0.073 / 0.072 / 0.085 | 5.3 | 0.076 / 0.107 |
+
+With random walk moves the accuracy saturates at 500 particles. Below that, it collapses: the
+NEES of 100 particles is ~300, so the cloud has lost its diversity. Per axis (body frame of the
+truth, KITTI 07), 100 particles lose on every axis alike, forward 0.06, left 0.08, up 0.08 m,
+roll 0.24 deg, against 0.04 / 0.04 / 0.04 m and 0.15 deg with 500. The vertical axes are not
+better determined than the planar ones: roll is the largest rotation error at every count.
+
+### Rao-Blackwellizing the vertical axes
+
+A Rao-Blackwellized particle filter for a ground vehicle would sample the planar pose (x, y,
+yaw) and keep a Gaussian of (z, roll, pitch) per particle. Options considered:
+
+- **Conditional Kalman filter / EKF (marginalized particle filter):** this needs a vertical
+  state that is linear and Gaussian given the planar one, which does not hold here.
+  - The scan likelihood is not Gaussian in z, roll or pitch: the distance field is clipped, and
+    an overpass makes z multimodal.
+  - The motion couples the parts nonlinearly: z changes with speed times pitch, and the planar
+    motion depends on roll and pitch.
+  - Each particle's weight would be the Laplace evidence, a biased estimate.
+  - Each particle needs Gauss-Newton iterations, so the cost per particle is that of a
+    derivative evaluation per iteration.
+  - It would also replace the transition prior and the replay of late scans with a second
+    filter per particle.
+- **Conditional Gauss-Newton with a Laplace approximation, as an MCMC move:** kept, as
+  `kernel: vertical_gauss_newton`, `GaussNewtonMove(threads, true)`.
+  - Moves keep the exact posterior and leave the rest of the filter unchanged.
+  - Within the tempered SMC stages, each step proposes the planar axes (forward, left, yaw) by
+    the cluster-covariance random walk.
+  - The vertical axes (up, roll, pitch) are then drawn from the local Gauss-Newton Gaussian
+    *conditioned on that planar step*: N(A_vv^-1 (g_v - A_vp d_p), A_vv^-1), where A is the
+    scan's tempered curvature plus the motion prior's.
+  - The step is accepted with the Metropolis-Hastings ratio, reverse proposal included.
+  - The vertical axes land near their conditional posterior in one step, which is the effect of
+    Rao-Blackwellization. Their correlation with the planar step, along a slope or a bank, comes
+    from the conditional mean.
+  - The planar axes keep the random walk's exploration, which matters for recovery.
+  - The axes are those of the body frame, so on slopes and banks "vertical" follows the road.
+  - An overpass stays multimodal across particles, and the local proposal does not jump
+    between levels.
+  - The analytic test (`VerticalGaussNewtonMovesTargetThePosterior`, x correlated with z)
+    checks means, variances and the correlation.
+  - The test fails if the proposal correction is dropped.
+- **IMU or ground constraints:** the vehicle motion model already restricts vertical and
+  attitude noise ([Motion models](#motion-models)); on KITTI 07 with 500 particles it did not
+  improve on the twist model (wheel odometry, forward speed and yaw rate only: 0.068 vs 0.054 m, z 0.077 vs 0.037 m).
+  `GroundPoseSampler` uses the ground height for global localization only.
+- **With tempering:** the moves run inside adaptive tempered SMC, which replaced annealing.
+
+| kernel, particles | nominal [m] | 3 m off [m] | kidnapped [m] | NEES | rot. RMSE [deg] | CPU / CUDA [ms] |
+|---|---|---|---|---|---|---|
+| random walk, 500 (default) | 0.075 | 0.075 | 0.104 | 3.4 | 0.181 | 4.95 / 1.85 |
+| random walk, 200 | 0.093 | 0.090 | 0.265 | 11 | 0.213 | |
+| Gauss-Newton, 200 | 0.081 | 0.085 | 0.218 | 4.3 | 0.169 | 3.75 / 1.64 |
+| vertical Gauss-Newton, 200 | 0.076 | 0.078 | 0.167 | 12 | 0.191 | **3.54 / 1.64** |
+| Gauss-Newton, 500 | 0.072 | 0.073 | 0.257 | 3.0 | **0.157** | |
+| **vertical Gauss-Newton, 500** | **0.072** | **0.069** | **0.082** | 3.0 | 0.176 | 7.04 / 2.32 |
+| any kernel, 100 | 0.095-0.131 | 0.092-0.131 | 0.30-0.35 | > 300 | | |
+
+- **Same particle count (500):** the vertical Gauss-Newton moves are the most accurate in every
+  scenario, recovering after kidnapping 0.082 against 0.104 m. They combine the accuracy of the
+  Gauss-Newton moves with the recovery of the random walk.
+- **Fewer particles:** with 200 particles they track as accurately as the random walk with 500,
+  30 % faster on the CPU. They do not recover as well from a kidnapping (0.167 m).
+- **100 particles:** too few for any kernel.
+- **Extra cost:** none in likelihood evaluations. A step evaluates the derivatives of the
+  proposals instead of their likelihood: 17 sums per particle on the GPU, the closed form on the
+  CPU. The rest is two 3x3 Cholesky factorizations per particle and step.
+- **Memory:** the derivatives of the current particles, 43 doubles each (0.17 MB for 500).
+- **CUDA:** the derivative sums run on the GPU; the per-particle algebra runs on CPU threads.
+
+### Coarse to fine
+
+More scan points are more accurate even at a fixed `scan_max_effective_points`, which keeps the
+likelihood's sharpness, while more points lower its noise. KITTI 07 and 03, 2 seeds:
+
+| points | 50 | 100 | 200 | 400 | 800 |
+|---|---|---|---|---|---|
+| KITTI 07 [m] | 0.089 | 0.070 | 0.054 | 0.051 | 0.046 |
+| KITTI 03 [m] | 0.120 | 0.090 | 0.073 | 0.068 | 0.063 |
+
+On the GPU 800 points cost no more than 200, since a likelihood evaluation takes ~0.03 ms. On
+the CPU the cost is proportional to the points.
+
+`coarse_to_fine` tempers with a nested quarter of the points, every fourth point
+(`MeasurementModel::coarse()`). Their log-likelihood is scaled by 4, so it estimates the full
+one at the same tempering exponent. At beta = 1 the update bridges to the full model:
+
+- it reweights by tau (log L - log L_coarse) at the current particles;
+- it resamples if needed;
+- it moves once on the full target.
+
+The final particles target the full posterior. `CoarseToFineEndsAtTheFullPosterior` checks this
+with a coarse model that is shifted and twice as wide; without the bridge weights the test fails.
+The fraction is fixed at 1/4 (`kCoarseFraction`): with 800 points, 200 for the coarse stages were
+as accurate as 800 throughout, while 50 of 200 lost accuracy.
+
+| configuration | nominal [m] | 3 m off [m] | kidnapped [m] | NEES | CPU / CUDA [ms] |
+|---|---|---|---|---|---|
+| random walk, 500 particles, 200 points (default) | 0.075 | 0.075 | 0.104 | 3.4 | 4.95 / 1.85 |
+| the same, coarse to fine (50 of 200 points) | 0.084 | 0.083 | 0.188 | 26 | |
+| random walk, 500, 800 points | 0.060 | 0.061 | 0.100 | 2.2 | 14.7 / 1.87 |
+| random walk, 500, 800 points, coarse to fine | **0.058** | **0.058** | 0.103 | 2.4 | 9.7 / 2.04 |
+| Gauss-Newton, 200, 800 points, coarse to fine | 0.064 | 0.064 | 0.183 | 2.4 | |
+| **vertical Gauss-Newton, 200, 800 points, coarse to fine** | **0.058** | 0.059 | **0.100** | 2.3 | **6.7 / 1.80** |
+
+Per sequence (nominal), from the default to 800 points with vertical Gauss-Newton moves, 200
+particles and coarse to fine: 07 0.055 -> 0.043, 03 0.073 -> 0.060, 04 0.071 -> 0.055,
+06 0.070 -> 0.058, 10 0.055 -> 0.046, 01 (highway) 0.126 -> 0.087 m.
+
+- **800 points:** 20 % less error in every scenario and sequence.
+- **Coarse to fine:** takes a third off the CPU time of 800 points at the same accuracy. It
+  costs a little on the GPU (one more stage) and loses with 200 points, so it is off by default.
+- **Same budget:**
+  - On the GPU, 800 points with vertical Gauss-Newton moves and 200 particles beat the default
+    in every scenario at the same time (1.80 vs 1.85 ms).
+  - On the CPU, the same configuration costs 6.7 instead of 4.95 ms for 23 % less error. With
+    200 points, vertical Gauss-Newton moves with 200 particles match the default at 3.5 ms.
+- **The cm-level configuration** (`kitti_accurate.yaml`, GICP refinement), KITTI 07, 3 seeds:
+  - lost accuracy with annealing removed: 0.042-0.047 m with 200 points;
+  - got it back with 800 points and coarse to fine: 0.037-0.039 m, the level of the former
+    annealed configuration;
+  - with vertical Gauss-Newton moves and 1000 particles: 0.036-0.038 m.
+
+The node defaults stay generic 6-DoF (random walk, 200 points). Configuration choices:
+
+| situation | settings |
+|---|---|
+| ground vehicles | `kernel: vertical_gauss_newton` |
+| with CUDA | `scan_sample_num: 800` |
+| CPU with many points | `coarse_to_fine: true` |
+
+### Not done
+
+- **Stein variational moves** (SVGD; Gauss-Newton Stein as in MegaParticles,
+  arXiv 2404.16370): deterministic interacting moves that do not keep the posterior exactly.
+  - With finite particles they underestimate its variance, against the NEES of ~3 the MCMC
+    moves keep.
+  - The kernel interactions cost O(N^2) per step.
+  - Their main gain, millions of particles on the GPU, addresses the particle count, which the
+    Gauss-Newton moves already reduce while staying exact.
+- **A multimodal benchmark** (repeated structures) and real vehicle data are still to come.
 
 ## Tempering
 

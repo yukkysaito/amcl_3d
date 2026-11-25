@@ -32,6 +32,11 @@ public:
     size_t mcmc_steps = 1;           // per stage
     double cess_ratio = 0.5;         // target conditional ESS / N of a stage
     double target_acceptance = 0.3;  // the proposal scale follows it (Robbins-Monro)
+    /// Temper with a quarter of the observations (MeasurementModel::coarse()), then reweight by
+    /// the ratio of the full to the coarse likelihood and move once more (one stage of
+    /// max_stages): the early stages cost a quarter. Pays off on the CPU with many scan points
+    /// (docs/evaluation.md).
+    bool coarse_to_fine = false;
   };
 
   /// Throws std::invalid_argument for a null kernel or parameters out of range.

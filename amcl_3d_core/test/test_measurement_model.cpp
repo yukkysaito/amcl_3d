@@ -218,4 +218,33 @@ TEST(PointCloudMeasurementModel, CountsOnePointAsOneObservation)
   EXPECT_THROW(PointCloudMeasurementModel(nullptr, points), std::invalid_argument);
 }
 
+TEST(PointCloudMeasurementModel, CoarseModelEstimatesTheFullLogLikelihood)
+{
+  const auto likelihood =
+    std::make_shared<LikelihoodField>(roomField(1.0), LikelihoodField::Params{});
+  const std::vector<Eigen::Vector3d> points = test::makeRoomScanPoints();
+  const ParticleSet particles = test::makeRoomParticles(5);
+  const PointCloudMeasurementModel model(likelihood, points);
+
+  const auto coarse = model.coarse(0.25);
+  ASSERT_NE(coarse, nullptr);
+  // every fourth point, scaled by the full count over the subset's; same observation count
+  std::vector<Eigen::Vector3d> subset;
+  for (size_t k = 0; k < points.size(); k += 4) {
+    subset.push_back(points[k]);
+  }
+  const LogLikelihood result = coarse->computeLogLikelihood(particles);
+  EXPECT_EQ(result.observation_num, points.size());
+  const Eigen::VectorXd expected = static_cast<double>(points.size()) /
+                                   static_cast<double>(subset.size()) *
+                                   likelihood->logLikelihood(particles, subset);
+  EXPECT_TRUE(result.values.isApprox(expected));
+  // nested: the coarse model of a coarse model subsamples further
+  ASSERT_NE(coarse->coarse(0.5), nullptr);
+  EXPECT_EQ(coarse->coarse(0.5)->computeLogLikelihood(particles).observation_num, points.size());
+  // nothing to gain from a fraction of 1 or from a few points
+  EXPECT_EQ(model.coarse(1.0), nullptr);
+  EXPECT_EQ(PointCloudMeasurementModel(likelihood, {points[0], points[1]}).coarse(0.25), nullptr);
+}
+
 }  // namespace amcl_3d

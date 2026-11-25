@@ -77,10 +77,20 @@ public:
 /// derivative evaluation per step (the proposals) when the caller keeps the derivatives of the
 /// current particles. MALA with an isotropic or the cluster covariance as M was evaluated too
 /// and dropped (docs/evaluation.md).
+///
+/// With `planar_random_walk` (ground vehicles, body frame z up), only the vertical axes (up, roll,
+/// pitch) follow the curvature: the planar ones (forward, left, yaw) take a random walk with the
+/// cluster covariance, and the vertical ones are drawn from the local Gaussian model conditioned
+/// on that step (Rao-Blackwellization of the vertical axes as an exact Metropolis-Hastings move:
+/// they are close to their conditional posterior after one step, while the planar axes keep the
+/// exploration of the random walk).
 class GaussNewtonMove : public MoveKernel
 {
 public:
-  explicit GaussNewtonMove(size_t thread_num = 4) : thread_num_(thread_num) {}
+  explicit GaussNewtonMove(size_t thread_num = 4, bool planar_random_walk = false)
+  : thread_num_(thread_num), planar_random_walk_(planar_random_walk)
+  {
+  }
   bool usesDerivatives() const override { return true; }
   MoveStatistics move(
     ParticleSet & particles, Eigen::VectorXd & log_likelihood, const MoveTarget & target,
@@ -89,6 +99,7 @@ public:
 
 private:
   size_t thread_num_;
+  bool planar_random_walk_;
 };
 
 /// Random walk Metropolis: x' = (t + dt, Exp(dr) R) with (dt, dr) ~ N(0, (scale L)(scale L)^T) of

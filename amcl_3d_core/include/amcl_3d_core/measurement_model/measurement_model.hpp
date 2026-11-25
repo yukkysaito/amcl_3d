@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include <Eigen/Core>
 #include <cstddef>
 #include <vector>
@@ -55,6 +57,14 @@ public:
     static_cast<void>(particles);
     static_cast<void>(derivatives);
     return false;
+  }
+  /// The model on a nested subset of about `fraction` of the observations, its log-likelihood
+  /// scaled to estimate the full one (same observation_num): a cheaper, noisier version for the
+  /// early tempering stages. Null if the model cannot be subsampled.
+  virtual std::unique_ptr<MeasurementModel> coarse(double fraction) const
+  {
+    static_cast<void>(fraction);
+    return nullptr;
   }
 };
 

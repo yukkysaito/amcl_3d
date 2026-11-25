@@ -19,3 +19,9 @@ methods:
   rwm_cess015: {update: tsmc, effective: 100, cess: 0.15}
   gn_cess03: {update: tsmc, effective: 100, kernel: gn, cess: 0.3}
   gn_cess015: {update: tsmc, effective: 100, kernel: gn, cess: 0.15}
+  # particle count, vertical Gauss-Newton moves and coarse to fine (docs/evaluation.md)
+  rwm_n200: {update: tsmc, effective: 100, cess: 0.15, particles: 200}
+  vgn_n200: {update: tsmc, effective: 100, cess: 0.15, particles: 200, kernel: vgn}
+  vgn_n500: {update: tsmc, effective: 100, cess: 0.15, kernel: vgn}
+  rwm_s800_c2f: {update: tsmc, effective: 100, cess: 0.15, sample: 800, coarse: 1}
+  vgn_n200_s800_c2f: {update: tsmc, effective: 100, cess: 0.15, particles: 200, sample: 800, coarse: 1, kernel: vgn}

@@ -169,27 +169,114 @@ MoveStatistics RandomWalkMetropolis::move(
 
 namespace
 {
-/// The Gauss-Newton preconditioner M = A^-1 through the Cholesky factor of the precision A: no
-/// 6x6 inverse or eigen decomposition per particle.
-class Preconditioning
+using Matrix3d = Eigen::Matrix3d;
+using Vector3d = Eigen::Vector3d;
+
+/// Local axes of a ground vehicle (body frame, z up): the plane (forward, left, yaw) and the
+/// vertical (up, roll, pitch).
+constexpr int kPlanar[3] = {0, 1, 5};
+constexpr int kVertical[3] = {2, 3, 4};
+
+Vector3d take(const Vector6d & v, const int (&axes)[3])
+{
+  return Vector3d(v(axes[0]), v(axes[1]), v(axes[2]));
+}
+
+Matrix3d take(const Matrix6d & m, const int (&rows)[3], const int (&cols)[3])
+{
+  Matrix3d out;
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      out(r, c) = m(rows[r], cols[c]);
+    }
+  }
+  return out;
+}
+
+/// log N(x; mean, covariance) up to the constant, the covariance as the Cholesky factor of its
+/// inverse (precision) or of itself.
+template <int N>
+double logGaussianFromPrecision(
+  const Eigen::LLT<Eigen::Matrix<double, N, N>> & precision, const Eigen::Matrix<double, N, 1> & d)
+{
+  return -0.5 * Eigen::Matrix<double, N, 1>(precision.matrixU() * d).squaredNorm() +
+         precision.matrixLLT().diagonal().array().log().sum();
+}
+
+/// The proposal q(delta | x) of a Gauss-Newton move at a pose, from the log target's gradient g
+/// and curvature A there (local frame).
+/// - full: delta ~ N(h/2 A^-1 g, h A^-1), a Langevin step preconditioned by the curvature.
+/// - planar random walk, conditional vertical: (forward, left, yaw) ~ N(0, h C) with C the
+///   particle's cluster covariance, and (up, roll, pitch) from the Gaussian of the local quadratic
+///   model conditioned on that planar step, N(A_vv^-1 (g_v - A_vp delta_p), A_vv^-1): the
+///   vertical axes jump to their conditional Laplace approximation, the correlation with the
+///   planar step (along a slope) included.
+class LocalProposal
 {
 public:
-  explicit Preconditioning(const Matrix6d & a)
-  : llt_(0.5 * (a + a.transpose()) + 1e-12 * Matrix6d::Identity())
+  static LocalProposal full(const Matrix6d & a, const Vector6d & g, double h)
   {
+    LocalProposal q;
+    q.conditional_ = false;
+    q.precision_ = Eigen::LLT<Matrix6d>(0.5 * (a + a.transpose()) / h);
+    q.mean_ = 0.5 * h * Eigen::LLT<Matrix6d>(0.5 * (a + a.transpose())).solve(g);
+    return q;
   }
-  Vector6d apply(const Vector6d & g) const { return llt_.solve(g); }  // M g
-  /// M^(1/2) z: covariance M for z ~ N(0, I)
-  Vector6d sample(const Vector6d & z) const { return llt_.matrixU().solve(z); }
-  /// log N(delta; mean, h M) up to the constant.
-  double logDensity(const Vector6d & delta, const Vector6d & mean, double h) const
+  static LocalProposal conditional(
+    const Matrix6d & a, const Vector6d & g, const Matrix6d & planar_covariance, double h)
   {
-    const double quadratic = Vector6d(llt_.matrixU() * (delta - mean)).squaredNorm();
-    return -0.5 * quadratic / h + llt_.matrixLLT().diagonal().array().log().sum();
+    LocalProposal q;
+    q.conditional_ = true;
+    q.planar_ = Eigen::LLT<Matrix3d>(h * take(planar_covariance, kPlanar, kPlanar));
+    q.vertical_ = Eigen::LLT<Matrix3d>(take(a, kVertical, kVertical));
+    q.coupling_ = take(a, kVertical, kPlanar);
+    q.g_vertical_ = take(g, kVertical);
+    return q;
+  }
+
+  Vector6d sample(const Vector6d & z) const
+  {
+    if (!conditional_) {
+      return mean_ + precision_.matrixU().solve(z);
+    }
+    const Vector3d planar = planar_.matrixL() * take(z, kPlanar);
+    const Vector3d vertical =
+      verticalMean(planar) + Vector3d(vertical_.matrixU().solve(take(z, kVertical)));
+    Vector6d delta;
+    for (int k = 0; k < 3; ++k) {
+      delta(kPlanar[k]) = planar(k);
+      delta(kVertical[k]) = vertical(k);
+    }
+    return delta;
+  }
+
+  double logDensity(const Vector6d & delta) const
+  {
+    if (!conditional_) {
+      return logGaussianFromPrecision<6>(precision_, Vector6d(delta - mean_));
+    }
+    const Vector3d planar = take(delta, kPlanar);
+    const Vector3d whitened = planar_.matrixL().solve(planar);
+    return -0.5 * whitened.squaredNorm() - planar_.matrixLLT().diagonal().array().log().sum() +
+           logGaussianFromPrecision<3>(
+             vertical_, Vector3d(take(delta, kVertical) - verticalMean(planar)));
   }
 
 private:
-  Eigen::LLT<Matrix6d> llt_;
+  Vector3d verticalMean(const Vector3d & planar) const
+  {
+    return vertical_.solve(Vector3d(g_vertical_ - coupling_ * planar));
+  }
+
+  bool conditional_ = false;
+  // full
+  Eigen::LLT<Matrix6d> precision_;
+  Vector6d mean_ = Vector6d::Zero();
+  // conditional
+  Eigen::LLT<Matrix3d> planar_;
+  Eigen::LLT<Matrix3d> vertical_;
+  Matrix3d coupling_ = Matrix3d::Zero();
+  Vector3d g_vertical_ = Vector3d::Zero();
 };
 }  // namespace
 
@@ -220,21 +307,30 @@ MoveStatistics GaussNewtonMove::move(
     kRotationLength * kRotationLength;
   const Matrix6d curvature_floor = floor.asDiagonal().toDenseMatrix() / (kMaxStddev * kMaxStddev);
 
-  // log target, drift and preconditioner at a pose (local frame)
+  // log target and proposal at a pose (local frame)
   auto local = [&](
                  size_t i, const Pose & pose, double value, const Vector6d & gradient,
-                 const Matrix6d & hessian, double & log_target, Vector6d & drift) {
+                 const Matrix6d & hessian, double & log_target) {
     Vector6d prior_gradient;
     Matrix6d prior_hessian;
     const double prior = target.prior.logDensity(i, pose, prior_gradient, prior_hessian);
     log_target = prior + target.exponent * value;
-    Preconditioning p(target.exponent * hessian + prior_hessian + curvature_floor);
-    drift = 0.5 * h * p.apply(prior_gradient + target.exponent * gradient);
-    return p;
+    const Matrix6d a = target.exponent * hessian + prior_hessian + curvature_floor;
+    const Vector6d g = prior_gradient + target.exponent * gradient;
+    if (!planar_random_walk_) {
+      return LocalProposal::full(a, g, h);
+    }
+    // the cluster covariance (world frame) in the particle's frame
+    const Matrix6d l = shape.sqrt_covariances[shape.cluster[i]];
+    Matrix6d to_local = Matrix6d::Zero();
+    const Eigen::Matrix3d rt = pose.orientation.toRotationMatrix().transpose();
+    to_local.topLeftCorner<3, 3>() = rt;
+    to_local.bottomRightCorner<3, 3>() = rt;
+    return LocalProposal::conditional(a, g, to_local * l * l.transpose() * to_local.transpose(), h);
   };
 
   ParticleSet proposals(n);
-  std::vector<Vector6d> forward_delta(n), forward_drift(n);
+  std::vector<Vector6d> forward_delta(n);
   std::vector<double> forward_log_target(n), forward_log_q(n), log_uniform(n);
   parallelFor(static_cast<int64_t>(n), thread_num_, [&](int64_t index) {
     const auto i = static_cast<size_t>(index);
@@ -245,11 +341,11 @@ MoveStatistics GaussNewtonMove::move(
       z(k) = standard_normal(stream);
     }
     const Pose pose = particles.pose(i);
-    const Preconditioning p = local(
+    const LocalProposal q = local(
       i, pose, current.values(index), current.gradients[i], current.hessians[i],
-      forward_log_target[i], forward_drift[i]);
-    forward_delta[i] = forward_drift[i] + std::sqrt(h) * p.sample(z);
-    forward_log_q[i] = p.logDensity(forward_delta[i], forward_drift[i], h);
+      forward_log_target[i]);
+    forward_delta[i] = q.sample(z);
+    forward_log_q[i] = q.logDensity(forward_delta[i]);
     proposals.setPose(i, retract(pose, forward_delta[i]));
     log_uniform[i] = std::log(std::uniform_real_distribution<double>(0.0, 1.0)(stream));
   });
@@ -262,12 +358,10 @@ MoveStatistics GaussNewtonMove::move(
     const auto i = static_cast<size_t>(index);
     const Pose proposal = proposals.pose(i);
     double backward_log_target;
-    Vector6d backward_drift;
-    const Preconditioning p = local(
+    const LocalProposal q = local(
       i, proposal, proposed.values(index), proposed.gradients[i], proposed.hessians[i],
-      backward_log_target, backward_drift);
-    const Vector6d backward_delta = localDifference(particles.pose(i), proposal);
-    const double backward_log_q = p.logDensity(backward_delta, backward_drift, h);
+      backward_log_target);
+    const double backward_log_q = q.logDensity(localDifference(particles.pose(i), proposal));
     const double log_ratio =
       backward_log_target - forward_log_target[i] + backward_log_q - forward_log_q[i];
     if (log_uniform[i] < log_ratio) {

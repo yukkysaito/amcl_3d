@@ -129,6 +129,42 @@ TEST_F(GaussianPosteriorTest, GaussNewtonMovesTargetThePosterior)
   }
 }
 
+TEST_F(GaussianPosteriorTest, VerticalGaussNewtonMovesTargetThePosterior)
+{
+  // planar random walk, vertical axes from their conditional Gauss-Newton model: still exact, on
+  // the planar and on the vertical axes; the observation correlates x with z (a slope), which the
+  // conditional mean has to follow
+  observation_.covariance(0, 2) = observation_.covariance(2, 0) = 0.008;
+  posterior_covariance_ =
+    (prior_.covariance.inverse() + observation_.covariance.inverse()).inverse();
+  Vector6d z;
+  z << 0.8, -0.5, 0.0, 0.0, 0.0, 0.1;
+  posterior_mean_ = posterior_covariance_ * observation_.covariance.inverse() * z;
+  TemperedSmcUpdate::Params params;
+  params.max_stages = 30;
+  params.mcmc_steps = 3;
+  params.cess_ratio = 0.3;
+  const TemperedSmcUpdate update(params, std::make_shared<GaussNewtonMove>(1, true));
+  for (const uint64_t seed : {1, 2}) {
+    ParticleFilter filter(seed);
+    filter.initialize(prior_, 4000);
+    const UpdateResult result =
+      update.apply(filter, PoseMeasurementModel(observation_), contextFor(filter));
+    const auto [mean, covariance] = posterior(filter);
+    EXPECT_GT(result.statistics.acceptanceRate(), 0.2) << "seed " << seed;
+    for (int k : {0, 1, 2, 5}) {
+      const double stddev = std::sqrt(posterior_covariance_(k, k));
+      EXPECT_NEAR(mean(k), posterior_mean_(k), 0.1 * stddev) << "seed " << seed << ", axis " << k;
+      EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.15)
+        << "seed " << seed << ", axis " << k;
+    }
+    const double correlation = covariance(0, 2) / std::sqrt(covariance(0, 0) * covariance(2, 2));
+    const double expected = posterior_covariance_(0, 2) /
+                            std::sqrt(posterior_covariance_(0, 0) * posterior_covariance_(2, 2));
+    EXPECT_NEAR(correlation, expected, 0.05) << "seed " << seed;
+  }
+}
+
 TEST(LikelihoodFieldDerivatives, MatchFiniteDifferences)
 {
   const PointCloud::Ptr map = test::makeRoomMap();
@@ -178,6 +214,56 @@ TEST(LikelihoodFieldDerivatives, MatchFiniteDifferences)
         Eigen::SelfAdjointEigenSolver<Matrix6d>(d.hessians[i]).eigenvalues().minCoeff(), -1e-9);
     }
     EXPECT_GE(matching, particles.size() - 1);  // a step may cross a Voronoi boundary
+  }
+}
+
+/// A pose observation whose coarse version is shifted and wider (another posterior).
+class TwoLevelModel : public MeasurementModel
+{
+public:
+  TwoLevelModel(const PoseWithCovariance & fine, const PoseWithCovariance & coarse)
+  : fine_(fine), coarse_(coarse)
+  {
+  }
+  LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override
+  {
+    return fine_.computeLogLikelihood(particles);
+  }
+  std::unique_ptr<MeasurementModel> coarse(double) const override
+  {
+    return std::make_unique<PoseMeasurementModel>(coarse_);
+  }
+
+private:
+  PoseMeasurementModel fine_;
+  PoseWithCovariance coarse_;
+};
+
+TEST_F(GaussianPosteriorTest, CoarseToFineEndsAtTheFullPosterior)
+{
+  // tempering with the coarse model, then bridging by the likelihood ratio, gives the posterior
+  // of the full model (the coarse one is 0.15 m off and twice as wide)
+  PoseWithCovariance coarse = observation_;
+  coarse.pose.position.x() += 0.15;
+  coarse.covariance *= 4.0;
+  TemperedSmcUpdate::Params params;
+  params.max_stages = 30;
+  params.mcmc_steps = 3;
+  params.coarse_to_fine = true;
+  const TemperedSmcUpdate update(params, std::make_shared<RandomWalkMetropolis>(1));
+  for (const uint64_t seed : {1, 2, 3}) {
+    ParticleFilter filter(seed);
+    filter.initialize(prior_, 4000);
+    const UpdateResult result =
+      update.apply(filter, TwoLevelModel(observation_, coarse), contextFor(filter));
+    EXPECT_GT(result.statistics.stages, 2u) << "seed " << seed;
+    const auto [mean, covariance] = posterior(filter);
+    for (int k : {0, 1, 5}) {
+      const double stddev = std::sqrt(posterior_covariance_(k, k));
+      EXPECT_NEAR(mean(k), posterior_mean_(k), 0.15 * stddev) << "seed " << seed << ", axis " << k;
+      EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.2)
+        << "seed " << seed << ", axis " << k;
+    }
   }
 }
 
