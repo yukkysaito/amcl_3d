@@ -6,6 +6,7 @@
 #include <cmath>
 #include <vector>
 
+#include "amcl_3d_core/math.hpp"
 #include "amcl_3d_core/types.hpp"
 
 namespace evaluation
@@ -23,8 +24,14 @@ struct Errors
   std::vector<double> translation;  // [m], horizontal
   std::vector<double> yaw;          // [rad]
   std::vector<double> rotation;     // [rad], 3D
+  /// per axis in the frame of the truth: forward, left, up [m], roll, pitch, yaw [rad]
+  std::vector<double> axes[6];
   void add(const Pose & estimate, const Pose & truth)
   {
+    const amcl_3d::Vector6d local = amcl_3d::localDifference(estimate, truth);
+    for (int k = 0; k < 6; ++k) {
+      axes[k].push_back(std::abs(local(k)));
+    }
     rotation.push_back(estimate.orientation.angularDistance(truth.orientation));
     translation.push_back((estimate.position - truth.position).head<2>().norm());
     const double d = yawOf(estimate.orientation) - yawOf(truth.orientation);

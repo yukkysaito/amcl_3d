@@ -36,8 +36,9 @@ struct SensorParams
   {
     bool enabled = false;
     size_t max_stages = 8;
-    size_t mcmc_steps = 1;    // per stage
-    double cess_ratio = 0.5;  // conditional ESS / N kept by a stage
+    size_t mcmc_steps = 1;        // per stage
+    double cess_ratio = 0.5;      // conditional ESS / N kept by a stage
+    bool coarse_to_fine = false;  // TemperedSmcUpdate::Params::coarse_to_fine
     /// MCMC move: random walk Metropolis (no gradients) or Langevin moves preconditioned by the
     /// Gauss-Newton curvature (GaussNewtonMove).
     enum class Kernel

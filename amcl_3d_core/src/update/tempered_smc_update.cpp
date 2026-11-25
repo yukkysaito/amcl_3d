@@ -11,6 +11,13 @@ namespace amcl_3d
 {
 namespace
 {
+/// Fraction of the observations of the coarse stages (coarse_to_fine): on KITTI with 800 scan
+/// points, 200 for the coarse stages were as accurate as 800 throughout; 50 of 200 lost ~5 %.
+constexpr double kCoarseFraction = 0.25;
+}  // namespace
+
+namespace
+{
 double conditionalEss(const Eigen::VectorXd & weights, const Eigen::VectorXd & log_u)
 {
   const Eigen::ArrayXd u = (log_u.array() - log_u.maxCoeff()).exp();
@@ -61,18 +68,30 @@ UpdateResult TemperedSmcUpdate::apply(
   UpdateResult result;
   UpdateStatistics & statistics = result.statistics;
   statistics.stages = 0;
-  // derivatives of the current particles, kept for kernels that use them
+  // coarse to fine: temper with a subset of the observations, then bridge to the full model
+  const std::unique_ptr<MeasurementModel> coarse =
+    params_.coarse_to_fine && params_.max_stages > 1 ? model.coarse(kCoarseFraction) : nullptr;
+  const MeasurementModel & tempered = coarse ? *coarse : model;
+
+  // log-likelihood (untempered) and derivatives of the current particles, for `tempered` and
+  // then for `model`; the derivatives only for kernels that use them
   LogLikelihoodDerivatives derivatives;
-  const bool keep_derivatives =
-    kernel_->usesDerivatives() && model.computeDerivatives(filter.particles(), derivatives);
-  LogLikelihood initial;
-  if (keep_derivatives) {
-    initial.values = derivatives.values;
-    initial.observation_num = derivatives.observation_num;
-  } else {
-    initial = model.computeLogLikelihood(filter.particles());
-  }
-  auto select = [&](const std::vector<size_t> & parents, Eigen::VectorXd & log_likelihood) {
+  bool keep_derivatives = false;
+  Eigen::VectorXd log_likelihood;
+  auto evaluate = [&](const MeasurementModel & m) {
+    LogLikelihood values;
+    keep_derivatives =
+      kernel_->usesDerivatives() && m.computeDerivatives(filter.particles(), derivatives);
+    if (keep_derivatives) {
+      values.values = derivatives.values;
+      values.observation_num = derivatives.observation_num;
+    } else {
+      values = m.computeLogLikelihood(filter.particles());
+    }
+    log_likelihood = values.values;
+    return values;
+  };
+  auto select = [&](const std::vector<size_t> & parents) {
     Eigen::VectorXd selected(static_cast<Eigen::Index>(parents.size()));
     for (size_t j = 0; j < parents.size(); ++j) {
       selected(static_cast<Eigen::Index>(j)) =
@@ -92,41 +111,32 @@ UpdateResult TemperedSmcUpdate::apply(
       derivatives = std::move(d);
     }
   };
+  const LogLikelihood initial = evaluate(tempered);
   result.likelihood = summarize(initial);
   const double tau =
     temperingExponent(initial.observation_num, context.max_effective_observation_num);
-  Eigen::VectorXd log_likelihood = initial.values;  // untempered, of the current particles
   const double n = static_cast<double>(filter.particles().size());
   double scale = ProposalShape{}.scale;
 
-  double beta = 0.0;
-  while (beta < 1.0) {
-    ++statistics.stages;
-    const bool last = statistics.stages >= params_.max_stages;
-    const double increment =
-      last ? 1.0 - beta
-           : nextIncrement(
-               filter.particles().weights(), tau * log_likelihood, 1.0 - beta, params_.cess_ratio);
-    beta = increment >= 1.0 - beta ? 1.0 : beta + increment;
-    filter.reweight(increment * tau * log_likelihood);
+  // after a reweighting: resample if needed, and move towards p(x | ancestor) L(x)^exponent
+  auto resampleAndMove = [&](const MeasurementModel & m, double exponent, bool final) {
     const double ess_ratio = filter.effectiveSampleSize() / n;
     statistics.min_ess_ratio = std::min(statistics.min_ess_ratio, ess_ratio);
     if (params_.mcmc_steps == 0 || !filter.transitionPrior().available()) {
-      if (ess_ratio < context.ess_ratio_threshold && beta < 1.0) {
-        select(context.resample(), log_likelihood);
+      if (ess_ratio < context.ess_ratio_threshold && !final) {
+        select(context.resample());
       }
-      continue;
+      return;
     }
-
     // proposals from the weighted cloud, before resampling
     ProposalShape shape = ProposalShape::fromParticles(filter.particles(), context.clustering);
     shape.scale = scale;
     if (ess_ratio < context.ess_ratio_threshold) {
       const std::vector<size_t> parents = context.resample();
-      select(parents, log_likelihood);
+      select(parents);
       shape.select(parents);
     }
-    const MoveTarget target{model, tau * beta, filter.transitionPrior()};
+    const MoveTarget target{m, exponent, filter.transitionPrior()};
     for (size_t step = 0; step < params_.mcmc_steps; ++step) {
       const MoveStatistics moved = kernel_->move(
         filter.mutableParticles(), log_likelihood, target, shape, drawKey(filter.randomGenerator()),
@@ -143,6 +153,30 @@ UpdateResult TemperedSmcUpdate::apply(
       }
     }
     scale = shape.scale;
+  };
+
+  // the coarse model leaves the last stage to the bridge
+  const size_t max_stages = coarse ? params_.max_stages - 1 : params_.max_stages;
+  double beta = 0.0;
+  while (beta < 1.0) {
+    ++statistics.stages;
+    const bool last = statistics.stages >= max_stages;
+    const double increment =
+      last ? 1.0 - beta
+           : nextIncrement(
+               filter.particles().weights(), tau * log_likelihood, 1.0 - beta, params_.cess_ratio);
+    beta = increment >= 1.0 - beta ? 1.0 : beta + increment;
+    filter.reweight(increment * tau * log_likelihood);
+    resampleAndMove(tempered, tau * beta, beta >= 1.0 && !coarse);
+  }
+  if (coarse) {
+    // bridge: p L_coarse^tau -> p L^tau, by the ratio of the two at the current particles
+    ++statistics.stages;
+    ++statistics.likelihood_evaluations;
+    const Eigen::VectorXd coarse_log_likelihood = log_likelihood;
+    evaluate(model);
+    filter.reweight(tau * (log_likelihood - coarse_log_likelihood));
+    resampleAndMove(model, tau, true);
   }
   return result;
 }

@@ -97,9 +97,10 @@ Parameters are documented in [`amcl_3d/config/amcl_3d.param.yaml`](amcl_3d/confi
 - **Resampling**: systematic or KLD sampling, triggered by the effective sample size
 - **Recovery**: augmented MCL, expansion resetting (statistics per sensor), global localization
 - **Tempered SMC** (default): each scan enters in adaptive stages with MCMC moves in between
-  (`scan_tempered_smc`; random walk or Gauss-Newton moves), which gather the cloud where the scan
-  fits rather than where the motion model scattered it, while keeping the posterior: the particle
-  covariance matches the error (NEES ~3)
+  (`scan_tempered_smc`; random walk or Gauss-Newton moves), which
+  gather the cloud where the scan fits rather than where the motion model scattered it, while
+  keeping the posterior: the particle covariance matches the error (NEES ~3); optionally coarse to
+  fine (early stages with a quarter of the scan points)
 - **Refinement**: optional GICP scan matching of the published estimate (cm-level)
 - **Estimate**: mean and covariance (quaternion averaging) of the most likely cluster of particles
   (`estimate.type`), so that a multimodal cloud, e.g. during global localization, yields a pose on
@@ -201,7 +202,16 @@ error, a yaw rate bias and noise. Means over the 18 runs:
 | initial guess 3 m / 8.6 deg off | 0.075 | | | |
 | kidnapped (5 m, expansion resetting) | 0.104 | | | |
 
-With GICP refinement of the published pose, KITTI 07 reaches 0.043 m.
+Options measured on the same benchmark:
+
+| configuration | nominal / 3 m off / kidnapped [m] | KITTI 07 CPU / CUDA [ms] |
+|---|---|---|
+| default | 0.075 / 0.075 / 0.104 | 4.95 / 1.85 |
+| `scan_sample_num: 800`, `coarse_to_fine: true` | 0.058 / 0.058 / 0.103 | 9.7 / 2.04 |
+
+With 800 points, coarse to fine and GICP refinement of the published pose
+([`kitti_accurate.yaml`](amcl_3d_core/tools/config/kitti_accurate.yaml)), KITTI 07 reaches
+0.037-0.039 m.
 [docs/evaluation.md](docs/evaluation.md) holds every measurement behind the defaults: map
 representations, particle counts, tempering, tempered SMC against the annealed particle filter,
 move kernels, delayed measurements, scan likelihoods, motion models, and the options removed

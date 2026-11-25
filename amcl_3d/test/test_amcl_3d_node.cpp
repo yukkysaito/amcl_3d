@@ -368,6 +368,19 @@ TEST_F(Amcl3dNodeTest, LocalizesWithGaussNewtonMoves)
   EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
 }
 
+TEST_F(Amcl3dNodeTest, LocalizesFromCoarseToFine)
+{
+  start(
+    {{"scan_tempered_smc.enabled", true},
+     {"scan_tempered_smc.coarse_to_fine", true},
+     {"scan_tempered_smc.cess_ratio", 0.15},
+     {"scan_max_effective_points", 100}});
+  publishInitialPose();
+  publishScans(20);
+  EXPECT_LT(positionError(), 0.1);
+  EXPECT_LT(orientationError(), 1.0 * M_PI / 180.0);
+}
+
 TEST_F(Amcl3dNodeTest, RejectsUnknownMoveKernel)
 {
   rclcpp::NodeOptions unknown_kernel;

@@ -181,6 +181,56 @@ TEST(LikelihoodFieldDerivatives, MatchFiniteDifferences)
   }
 }
 
+/// A pose observation whose coarse version is shifted and wider (another posterior).
+class TwoLevelModel : public MeasurementModel
+{
+public:
+  TwoLevelModel(const PoseWithCovariance & fine, const PoseWithCovariance & coarse)
+  : fine_(fine), coarse_(coarse)
+  {
+  }
+  LogLikelihood computeLogLikelihood(const ParticleSet & particles) const override
+  {
+    return fine_.computeLogLikelihood(particles);
+  }
+  std::unique_ptr<MeasurementModel> coarse(double) const override
+  {
+    return std::make_unique<PoseMeasurementModel>(coarse_);
+  }
+
+private:
+  PoseMeasurementModel fine_;
+  PoseWithCovariance coarse_;
+};
+
+TEST_F(GaussianPosteriorTest, CoarseToFineEndsAtTheFullPosterior)
+{
+  // tempering with the coarse model, then bridging by the likelihood ratio, gives the posterior
+  // of the full model (the coarse one is 0.15 m off and twice as wide)
+  PoseWithCovariance coarse = observation_;
+  coarse.pose.position.x() += 0.15;
+  coarse.covariance *= 4.0;
+  TemperedSmcUpdate::Params params;
+  params.max_stages = 30;
+  params.mcmc_steps = 3;
+  params.coarse_to_fine = true;
+  const TemperedSmcUpdate update(params, std::make_shared<RandomWalkMetropolis>(1));
+  for (const uint64_t seed : {1, 2, 3}) {
+    ParticleFilter filter(seed);
+    filter.initialize(prior_, 4000);
+    const UpdateResult result =
+      update.apply(filter, TwoLevelModel(observation_, coarse), contextFor(filter));
+    EXPECT_GT(result.statistics.stages, 2u) << "seed " << seed;
+    const auto [mean, covariance] = posterior(filter);
+    for (int k : {0, 1, 5}) {
+      const double stddev = std::sqrt(posterior_covariance_(k, k));
+      EXPECT_NEAR(mean(k), posterior_mean_(k), 0.15 * stddev) << "seed " << seed << ", axis " << k;
+      EXPECT_NEAR(covariance(k, k) / posterior_covariance_(k, k), 1.0, 0.2)
+        << "seed " << seed << ", axis " << k;
+    }
+  }
+}
+
 TEST(TemperedSmc, NextIncrementKeepsTheConditionalEss)
 {
   const Eigen::VectorXd weights = Eigen::VectorXd::Constant(1000, 1e-3);

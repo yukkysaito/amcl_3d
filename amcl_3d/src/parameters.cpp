@@ -210,6 +210,9 @@ LocalizerParams declareLocalizerParams(rclcpp::Node & node, size_t thread_num)
   if (!(smc.cess_ratio > 0.0 && smc.cess_ratio < 1.0)) {
     throw std::invalid_argument("parameter 'scan_tempered_smc.cess_ratio' must be in (0, 1)");
   }
+  smc.coarse_to_fine = declare<bool>(
+    node, "scan_tempered_smc.coarse_to_fine", smc.coarse_to_fine,
+    "Temper with a quarter of the scan points, then bridge to all of them (CPU, many points)");
   smc.thread_num = thread_num;
   if (smc.enabled && smc.max_stages == 0) {
     throw std::invalid_argument("parameter 'scan_tempered_smc.max_stages' must be positive");

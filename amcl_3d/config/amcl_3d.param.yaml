@@ -40,11 +40,14 @@
       enabled: true
       max_stages: 8  # the last one takes the rest of the likelihood
       mcmc_steps: 1  # per stage
-      # random_walk | gauss_newton (Langevin moves along the scan's Gauss-Newton curvature, needs
-      # the likelihood_field): 0.071 m nominal but slower recovery from a wrong pose
-      # (docs/evaluation.md).
+      # random_walk: generic 6-DoF.
+      # gauss_newton: Langevin moves along the scan's Gauss-Newton curvature (needs the
+      #   likelihood_field); 0.072 m but slow recovery from a wrong pose (docs/evaluation.md).
       kernel: random_walk
       cess_ratio: 0.15  # conditional ESS / N kept by a stage; lower: fewer, larger stages
+      # temper with a quarter of the scan points, then bridge to all of them: on the CPU with
+      # scan_sample_num 800 a third faster at the same accuracy; no gain with 200 points or CUDA
+      coarse_to_fine: false
     # Inputs up to this much older than the newest scan (delayed sensors, late odometry) are fused
     # at their own time by replaying the newer scans (the result of time order) [s]; costs one
     # particle set per scan of memory and one update per newer scan.
