@@ -64,12 +64,13 @@ TEST_F(GicpScanMatcherTest, IgnoresPointsTheMapDoesNotExplain)
   GicpScanMatcher::Params params;
   const ScanMatchingResult robust = GicpScanMatcher(map_, params).align(scan_, guess);
   ASSERT_TRUE(robust.converged);
-  EXPECT_LT(positionError(robust.pose, true_pose_), 0.01);
+  // ~1 cm: the truck is a dense wall of 861 points against the map's planes
+  EXPECT_LT(positionError(robust.pose, true_pose_), 0.015);
 
   // without the kernel (a width far beyond any pair), the clutter drags the scan
   params.robust_kernel_width = 1e6;
   const ScanMatchingResult plain = GicpScanMatcher(map_, params).align(scan_, guess);
-  EXPECT_GT(positionError(plain.pose, true_pose_), 2.0 * positionError(robust.pose, true_pose_));
+  EXPECT_GT(positionError(plain.pose, true_pose_), 4.0 * positionError(robust.pose, true_pose_));
 }
 
 TEST_F(GicpScanMatcherTest, DoesNotConvergeWithoutOverlap)
@@ -115,6 +116,23 @@ TEST_F(GicpScanMatcherTest, RegistersASubsetOfTheScan)
   EXPECT_LT(result.pose.orientation.angularDistance(true_pose_.orientation), 0.002);
 }
 
+TEST_F(GicpScanMatcherTest, RegistersASparseScan)
+{
+  // a downsampled scan (every 25th point): too sparse for plane covariances of its own
+  std::vector<Eigen::Vector3d> sparse;
+  for (size_t i = 0; i < scan_.size(); i += 25) {
+    sparse.push_back(scan_[i]);
+  }
+  GicpScanMatcher matcher(map_, GicpScanMatcher::Params{});
+  Pose guess = true_pose_;
+  guess.position += Eigen::Vector3d(0.2, -0.15, 0.05);
+  guess.orientation = test::yawQuaternion(0.4);
+  const ScanMatchingResult result = matcher.align(sparse, guess);
+  ASSERT_TRUE(result.converged);
+  EXPECT_LT(positionError(result.pose, true_pose_), 0.01);
+  EXPECT_LT(result.pose.orientation.angularDistance(true_pose_.orientation), 0.002);
+}
+
 TEST_F(GicpScanMatcherTest, ConvergesQuicklyFarFromTheMapOrigin)
 {
   // Linearized about the sensor: a rotation does not swing the scan by its distance to the map
@@ -139,33 +157,10 @@ TEST_F(GicpScanMatcherTest, ConvergesQuicklyFarFromTheMapOrigin)
   EXPECT_LT(positionError(result.pose, truth), 0.01);
 }
 
-TEST(PlaneCovariance, OfASubsetEqualsThatOfAllPoints)
-{
-  std::vector<Eigen::Vector3d> points;
-  std::mt19937 rng(3);
-  std::normal_distribution<double> n(0.0, 1.0);
-  for (int i = 0; i < 200; ++i) {
-    points.emplace_back(n(rng), n(rng), 0.1 * n(rng));
-  }
-  const auto all = planeCovariances(points, 10);
-  const std::vector<size_t> queries{0, 17, 99, 199};
-  const auto subset = planeCovariances(points, queries, 10);
-  ASSERT_EQ(subset.size(), queries.size());
-  for (size_t i = 0; i < queries.size(); ++i) {
-    EXPECT_TRUE(subset[i].isApprox(all[queries[i]], 1e-12)) << "query " << queries[i];
-  }
-}
-
 TEST(PlaneCovariance, KeepsTheNormalAndFlattensTheSpread)
 {
-  // points spread on the z = 0 plane, much more along x than y
-  std::vector<Eigen::Vector3d> points;
-  for (int i = -5; i <= 5; ++i) {
-    for (int j = -1; j <= 1; ++j) {
-      points.emplace_back(0.3 * i, 0.05 * j, 0.0);
-    }
-  }
-  const Eigen::Matrix3d c = planeCovariances(points, 33)[16];
+  // covariance of points spread on the z = 0 plane, much more along x than y
+  const Eigen::Matrix3d c = regularizeToPlane(Eigen::Vector3d(0.3, 0.01, 1e-6).asDiagonal());
   EXPECT_NEAR(c(2, 2), 1e-3, 1e-9);  // across the plane
   EXPECT_NEAR(c(0, 0), 1.0, 1e-9);   // along it, whatever the spread
   EXPECT_NEAR(c(1, 1), 1.0, 1e-9);

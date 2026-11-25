@@ -17,6 +17,10 @@ namespace
 {
 using Matrix6d = Eigen::Matrix<double, 6, 6>;
 
+/// Variance of a scan point [m^2], isotropic: added to the map plane covariance, it bounds the
+/// information across the plane (as the plane's own 1e-3 does along its normal).
+constexpr double kScanPointVariance = 1e-3;
+
 pcl::PointXYZ toPoint(const Eigen::Vector3d & p)
 {
   return pcl::PointXYZ(
@@ -69,39 +73,6 @@ Eigen::Matrix3d regularizeToPlane(const Eigen::Matrix3d & covariance)
   return solver.eigenvectors() * values.asDiagonal() * solver.eigenvectors().transpose();
 }
 
-std::vector<Eigen::Matrix3d> planeCovariances(
-  const std::vector<Eigen::Vector3d> & points, size_t neighbor_num, size_t thread_num)
-{
-  std::vector<size_t> all(points.size());
-  for (size_t i = 0; i < all.size(); ++i) {
-    all[i] = i;
-  }
-  return planeCovariances(points, all, neighbor_num, thread_num);
-}
-
-std::vector<Eigen::Matrix3d> planeCovariances(
-  const std::vector<Eigen::Vector3d> & points, const std::vector<size_t> & queries,
-  size_t neighbor_num, size_t thread_num)
-{
-  std::vector<Eigen::Matrix3d> covariances(queries.size(), Eigen::Matrix3d::Identity());
-  if (points.size() < 3) {
-    return covariances;
-  }
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
-  cloud->reserve(points.size());
-  for (const auto & p : points) {
-    cloud->push_back(toPoint(p));
-  }
-  pcl::KdTreeFLANN<pcl::PointXYZ> tree;
-  tree.setInputCloud(cloud);
-  const int k = static_cast<int>(std::min(neighbor_num, points.size()));
-  parallelFor(static_cast<int64_t>(queries.size()), thread_num, [&](int64_t i) {
-    covariances[static_cast<size_t>(i)] =
-      neighborhoodCovariance(tree, cloud->points[queries[static_cast<size_t>(i)]], k);
-  });
-  return covariances;
-}
-
 GicpScanMatcher::GicpScanMatcher(const PointCloud::ConstPtr & map, const Params & params)
 : params_(params), map_(map)
 {
@@ -116,12 +87,14 @@ GicpScanMatcher::GicpScanMatcher(const PointCloud::ConstPtr & map, const Params 
     throw std::invalid_argument("GicpScanMatcher: invalid parameters");
   }
   tree_.setInputCloud(map_);
-  map_covariances_.resize(map_->size());
+  map_information_.resize(map_->size());
   const int k = static_cast<int>(std::min(params_.neighbor_num, map_->size()));
   parallelFor(static_cast<int64_t>(map_->size()), params_.thread_num, [&](int64_t i) {
     const Eigen::Matrix3d c =
-      neighborhoodCovariance(tree_, map_->points[static_cast<size_t>(i)], k);
-    map_covariances_[static_cast<size_t>(i)] = {
+      (neighborhoodCovariance(tree_, map_->points[static_cast<size_t>(i)], k) +
+       kScanPointVariance * Eigen::Matrix3d::Identity())
+        .inverse();
+    map_information_[static_cast<size_t>(i)] = {
       static_cast<float>(c(0, 0)), static_cast<float>(c(0, 1)), static_cast<float>(c(0, 2)),
       static_cast<float>(c(1, 1)), static_cast<float>(c(1, 2)), static_cast<float>(c(2, 2))};
   });
@@ -130,18 +103,14 @@ GicpScanMatcher::GicpScanMatcher(const PointCloud::ConstPtr & map, const Params 
 ScanMatchingResult GicpScanMatcher::align(
   const std::vector<Eigen::Vector3d> & full_scan, const Pose & initial_guess)
 {
-  // registered points: an even subset, with covariances from the neighbors in the whole scan
-  std::vector<size_t> queries;
+  // registered points: an even subset
   const size_t max_point_num = params_.max_point_num;
   const size_t stride = max_point_num > 0 && full_scan.size() > max_point_num
                           ? (full_scan.size() + max_point_num - 1) / max_point_num
                           : 1;
-  for (size_t i = 0; i < full_scan.size(); i += stride) {
-    queries.push_back(i);
-  }
   std::vector<Eigen::Vector3d> scan;
-  scan.reserve(queries.size());
-  for (const size_t i : queries) {
+  scan.reserve(full_scan.size() / stride + 1);
+  for (size_t i = 0; i < full_scan.size(); i += stride) {
     scan.push_back(full_scan[i]);
   }
   ScanMatchingResult result;
@@ -149,8 +118,6 @@ ScanMatchingResult GicpScanMatcher::align(
   if (scan.size() < 3) {
     return result;
   }
-  const std::vector<Eigen::Matrix3d> scan_covariances =
-    planeCovariances(full_scan, queries, params_.neighbor_num, params_.thread_num);
   const double kernel_squared = params_.robust_kernel_width * params_.robust_kernel_width;
   const float max_squared_distance =
     static_cast<float>(params_.max_correspondence_distance * params_.max_correspondence_distance);
@@ -177,11 +144,9 @@ ScanMatchingResult GicpScanMatcher::align(
           continue;
         }
         const size_t m = static_cast<size_t>(index[0]);
-        const auto & u = map_covariances_[m];
-        Eigen::Matrix3d map_covariance;
-        map_covariance << u[0], u[1], u[2], u[1], u[3], u[4], u[2], u[4], u[5];
-        const Eigen::Matrix3d information =
-          (map_covariance + rotation * scan_covariances[k] * rotation.transpose()).inverse();
+        const auto & u = map_information_[m];
+        Eigen::Matrix3d information;
+        information << u[0], u[1], u[2], u[1], u[3], u[4], u[2], u[4], u[5];
         const Eigen::Vector3d e = q - map_->points[m].getVector3fMap().cast<double>();
         // perturbation in the scan frame, T exp(delta) with delta = (rotation w, translation v):
         // de = -R [p]x w + R v. Linearized about the sensor, not the far map origin, where a
@@ -229,7 +194,7 @@ std::string GicpScanMatcher::description() const
 {
   std::ostringstream out;
   out << "GICP scan matching (" << map_->size() << " map points, " << params_.neighbor_num
-      << " neighbors per covariance)";
+      << " neighbors per map plane)";
   return out.str();
 }
 
